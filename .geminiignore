@@ -1,0 +1,73 @@
+# .geminiignore - Ignore patterns for Gemini CLI
+
+# Dependencies & Package Managers
+node_modules/
+package-lock.json
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Build Outputs & Compiled Assets
+dist/
+build/
+out/
+*.bundle.*
+*.min.js
+*.min.css
+*.map
+
+# Python / Django Artifacts & Virtual Environments
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+ENV/
+*.egg-info/
+.eggs/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Databases & Persistent Storage
+*.sqlite3
+*.db
+postgres_data/
+
+# Environment Variables & Secrets
+.env
+.env.*
+!.env.example
+
+# Media & Binary Assets (avoids context bloat)
+public/beat-images/
+*.mp4
+*.webm
+*.mov
+*.mp3
+*.wav
+*.ogg
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.ico
+
+# OS & Editor Artifacts
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Version Control & Local Overrides
+.git/
+docker-compose.override.yml

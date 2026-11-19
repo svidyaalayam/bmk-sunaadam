@@ -1,0 +1,11 @@
+{% extends "admin/change_list.html" %}
+{% block object-tools-items %}
+  <li>
+    <a href="{% url 'admin:exercise-import' %}"
+       class="button addlink"
+       style="background:#417690;color:#fff;padding:5px 12px;border-radius:4px;text-decoration:none;font-size:13px;margin-right:4px;">
+      ⬆ Import JSON
+    </a>
+  </li>
+  {{ block.super }}
+{% endblock %}

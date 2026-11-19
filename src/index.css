@@ -1,0 +1,18 @@
+:root {
+  color: #1c1612;
+  background: #efe6d8;
+  font-family: Georgia, "Times New Roman", serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+}
+
+button,
+input {
+  font-family: inherit;
+}

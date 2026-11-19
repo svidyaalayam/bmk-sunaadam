@@ -1,0 +1,28 @@
+{% extends "admin/base_site.html" %}
+{% block title %}Import Exercise | {{ site_title }}{% endblock %}
+{% block content %}
+<h1>Import Exercise from JSON</h1>
+{% if error %}
+  <p style="color:#ba2121;background:#fff3f3;padding:10px 14px;border-left:4px solid #ba2121;border-radius:3px;">
+    <strong>Import error:</strong> {{ error }}
+  </p>
+{% endif %}
+<form method="post" enctype="multipart/form-data">
+  {% csrf_token %}
+  <div style="margin:20px 0;">
+    <label for="json_file" style="font-weight:bold;display:block;margin-bottom:6px;">
+      Choose a previously exported exercise JSON file:
+    </label>
+    <input type="file" name="json_file" id="json_file" accept=".json" required>
+  </div>
+  <div>
+    <input type="submit" value="Import Exercise" class="button default">
+    <a href="{% url 'admin:lessons_exercise_changelist' %}"
+       style="margin-left:12px;color:#417690;">Cancel</a>
+  </div>
+</form>
+<div style="margin-top:28px;color:#666;font-size:13px;border-top:1px solid #eee;padding-top:14px;">
+  <strong>Note:</strong> The imported exercise will be created as a <em>new</em> record.
+  It will be linked to the same Session, Talam, and Ragam by name — those must already exist.
+</div>
+{% endblock %}
