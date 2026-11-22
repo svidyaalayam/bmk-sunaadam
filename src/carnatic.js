@@ -244,6 +244,10 @@ export function buildTableSchedule(
           : -1,
         section: {
           title: step.name?.trim() || selectedSections.map((section) => section.title).join(" + "),
+          description: selectedSections
+            .map((section) => section.description?.trim())
+            .filter(Boolean)
+            .join("\n\n"),
         },
         notes: selectedSections.flatMap((section) => section.notes),
         lyrics: hasLyrics

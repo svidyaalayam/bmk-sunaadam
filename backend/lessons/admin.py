@@ -24,6 +24,7 @@ class ExerciseSectionInline(admin.StackedInline):
     model = ExerciseSection
     extra = 1
     ordering = ("position",)
+    fields = ("title", "description", "notes", "lyrics", "position")
 
 
 class SectionSequenceWidget(forms.TextInput):
@@ -195,6 +196,7 @@ def _exercise_to_export_dict(exercise):
         "sections": [
             {
                 "title": s.title,
+                "description": s.description,
                 "notes": s.notes,
                 "lyrics": s.lyrics,
                 "position": s.position,
@@ -258,6 +260,7 @@ def _import_exercise_from_dict(data):
         sec = ExerciseSection.objects.create(
             exercise=exercise,
             title=sec_data.get("title", ""),
+            description=sec_data.get("description", ""),
             notes=sec_data.get("notes", ""),
             lyrics=sec_data.get("lyrics", ""),
             position=sec_data.get("position", 0),

@@ -22,7 +22,8 @@ const DRONE_INTERVALS = {
   null: null,
 };
 
-export function createShruthiBox() {
+export function createShruthiBox(options = {}) {
+  const getSharedContext = typeof options === "function" ? options : options?.getContext;
   let context = null;
   let masterGain = null;
   let voices = [];
@@ -32,7 +33,9 @@ export function createShruthiBox() {
 
   function ensureContext() {
     if (!context || context.state === "closed") {
-      context = new AudioContext();
+      context = getSharedContext?.() || new AudioContext();
+    }
+    if (!masterGain) {
       masterGain = context.createGain();
       masterGain.gain.value = currentVolume;
       masterGain.connect(context.destination);
@@ -118,11 +121,26 @@ export function createShruthiBox() {
     }
   }
 
+  async function resume() {
+    if (context && context.state === "suspended") {
+      await context.resume();
+    }
+  }
+
   return {
     play,
     stop,
     close,
     setVolume,
+    resume,
+    getMasterGain() {
+      ensureContext();
+      return masterGain;
+    },
+    getAudioContext() {
+      ensureContext();
+      return context;
+    },
     get activeIndex() {
       return activeIndex;
     },

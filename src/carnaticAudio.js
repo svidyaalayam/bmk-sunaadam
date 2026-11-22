@@ -34,6 +34,7 @@ function getShruthiFrequency(shruthi) {
 
 export function createCarnaticAudio() {
   let context = null;
+  let masterGain = null;   // all audio → masterGain → context.destination
   let activeVoice = null;
   let activeBellNodes = [];
 
@@ -42,8 +43,17 @@ export function createCarnaticAudio() {
       const AudioContextClass = window.AudioContext || window.webkitAudioContext;
       if (!AudioContextClass) throw new Error("Web Audio is not supported.");
       context = new AudioContextClass();
+      masterGain = context.createGain();
+      masterGain.gain.value = 1;
+      masterGain.connect(context.destination);
     }
     return context;
+  }
+
+  /** Returns the master gain node (creates context+gain if needed). */
+  function getMasterGain() {
+    getContext(); // ensures masterGain is set up
+    return masterGain;
   }
 
   function stopVoice() {
@@ -112,7 +122,7 @@ export function createCarnaticAudio() {
     gain.gain.exponentialRampToValueAtTime(peakVolume, start + attack);
     gain.gain.setValueAtTime(peakVolume, releaseStart);
     gain.gain.exponentialRampToValueAtTime(0.0001, end);
-    gain.connect(audioContext.destination);
+    gain.connect(getMasterGain());
 
     const oscillators = [];
     const addOscillator = (type, multiplier, level = 1) => {
@@ -169,7 +179,7 @@ export function createCarnaticAudio() {
     gain.gain.setValueAtTime(0.0001, start);
     gain.gain.exponentialRampToValueAtTime(volume, start + 0.008);
     gain.gain.exponentialRampToValueAtTime(0.0001, end);
-    gain.connect(audioContext.destination);
+    gain.connect(getMasterGain());
 
     const nodes = [1, 2.01, 2.99].map((partial, index) => {
       const oscillator = audioContext.createOscillator();
@@ -190,6 +200,47 @@ export function createCarnaticAudio() {
     playNote,
     playBell,
     stop,
+    /** Returns the underlying AudioContext (creates one if needed). */
+    getAudioContext: getContext,
+    /**
+     * Creates a MediaStream that captures all audio output (notes, bell, drone).
+     * Connects masterGain (and optional extraGainNodes like shruthi drone)
+     * → MediaStreamDestination so the recording hears everything that goes to speakers.
+     * Returns { stream, disconnect } — call disconnect() when done.
+     */
+    createAudioRecordingStream(extraGainNodes = []) {
+      const ctx = getContext();
+      const dest = ctx.createMediaStreamDestination();
+      getMasterGain().connect(dest);
+      const connectedExtras = [];
+      for (const node of extraGainNodes) {
+        if (node && typeof node.connect === "function") {
+          try {
+            node.connect(dest);
+            connectedExtras.push(node);
+          } catch {
+            // Context mismatch or already connected
+          }
+        }
+      }
+      return {
+        stream: dest.stream,
+        disconnect() {
+          try {
+            getMasterGain().disconnect(dest);
+          } catch {
+            /* already disconnected */
+          }
+          for (const node of connectedExtras) {
+            try {
+              node.disconnect(dest);
+            } catch {
+              /* ignore */
+            }
+          }
+        },
+      };
+    },
     async resume() {
       const ctx = getContext();
       if (ctx.state === "suspended") {
@@ -200,6 +251,7 @@ export function createCarnaticAudio() {
       stop();
       if (context && context.state !== "closed") context.close();
       context = null;
+      masterGain = null;
     },
   };
 }

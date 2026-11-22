@@ -12,6 +12,9 @@ import {
 } from "./carnatic";
 import { CARNATIC_INSTRUMENTS, createCarnaticAudio } from "./carnaticAudio";
 import { createShruthiBox, SHRUTHI_NOTES } from "./shruthiAudio";
+import { useScreenRecorder } from "./useScreenRecorder";
+import { SaveVideoModal } from "./SaveVideoModal";
+import { RecordQualityModal } from "./RecordQualityModal";
 
 const FALLBACK_SESSIONS = [
   { id: "carnatic", name: "Carnatic", parentId: null, allowRagamChange: false },
@@ -79,22 +82,88 @@ export default function CarnaticPage() {
   const [shruthi, setShruthi] = useState("normal-G");
   const [instrument, setInstrument] = useState("veena");
   const [noteVolume, setNoteVolume] = useState(100);
-  const [gamakamAmount, setGamakamAmount] = useState(0);
   const [bpm, setBpm] = useState(60);
   const [shruthiDrone, setShruthiDrone] = useState("pa");
   const [shruthiActiveIndex, setShruthiActiveIndex] = useState(-1);
   const [shruthiError, setShruthiError] = useState("");
   const [shruthiVolume, setShruthiVolume] = useState(14);
   const shruthiBoxRef = useRef(null);
-  
-  // Initialize Shruthi box
+
+  const [playbackState, setPlaybackState] = useState("stopped");
+  const [countdown, setCountdown] = useState(null);
+  const [playbackTime, setPlaybackTime] = useState(0);
+  const playbackTimeRef = useRef(0);
+  const animationRef = useRef(null);
+  const audioRef = useRef(null);
+  const audioPositionRef = useRef(null);
+  const bellPositionRef = useRef(null);
+
+  // Record-mode checkbox state
+  const [recordMode, setRecordMode] = useState(false);
+
+  // Auto-hide transport controls during playback; reveal on mouse movement for 2.5s
+  const [controlsVisible, setControlsVisible] = useState(true);
+  const hideControlsTimeoutRef = useRef(null);
+
+  const isPlaying = playbackState === "playing" || playbackState === "counting";
+
   useEffect(() => {
-    const box = createShruthiBox();
+    if (!isPlaying) {
+      setControlsVisible(true);
+      if (hideControlsTimeoutRef.current) {
+        clearTimeout(hideControlsTimeoutRef.current);
+        hideControlsTimeoutRef.current = null;
+      }
+      return undefined;
+    }
+
+    // When play/record is clicked, hide controls after 2.5 seconds
+    setControlsVisible(true);
+    hideControlsTimeoutRef.current = setTimeout(() => {
+      setControlsVisible(false);
+    }, 2500);
+
+    const handleMouseMove = () => {
+      setControlsVisible(true);
+      if (hideControlsTimeoutRef.current) {
+        clearTimeout(hideControlsTimeoutRef.current);
+      }
+      hideControlsTimeoutRef.current = setTimeout(() => {
+        setControlsVisible(false);
+      }, 2500);
+    };
+
+    window.addEventListener("mousemove", handleMouseMove);
+    return () => {
+      window.removeEventListener("mousemove", handleMouseMove);
+      if (hideControlsTimeoutRef.current) {
+        clearTimeout(hideControlsTimeoutRef.current);
+        hideControlsTimeoutRef.current = null;
+      }
+    };
+  }, [isPlaying]);
+
+  // Ref to the exercise-card DOM element for cropped recording
+  const exerciseCardRef = useRef(null);
+  const recorder = useScreenRecorder({
+    targetRef: exerciseCardRef,
+    audioRef,
+    shruthiBoxRef,
+  });
+
+  // Initialize Carnatic audio and Shruthi box sharing the same AudioContext
+  useEffect(() => {
+    const audio = createCarnaticAudio();
+    audioRef.current = audio;
+    const box = createShruthiBox({ getContext: () => audio.getAudioContext() });
     shruthiBoxRef.current = box;
     box.setVolume(shruthiVolume / 100);
-    return () => box.close();
+    return () => {
+      audio.close();
+      box.close();
+    };
   }, []);
-  
+
   // Update volume when slider changes
   useEffect(() => {
     shruthiBoxRef.current?.setVolume(shruthiVolume / 100);
@@ -136,20 +205,6 @@ export default function CarnaticPage() {
     const idx = SHRUTHI_NOTES.findIndex((n) => n.name === noteName);
     return idx >= 0 ? idx : 0;
   }
-
-  const [playbackState, setPlaybackState] = useState("stopped");
-  const [countdown, setCountdown] = useState(null);
-  const [playbackTime, setPlaybackTime] = useState(0);
-  const playbackTimeRef = useRef(0);
-  const animationRef = useRef(null);
-  const audioRef = useRef(null);
-  const audioPositionRef = useRef(null);
-  const bellPositionRef = useRef(null);
-
-  useEffect(() => {
-    audioRef.current = createCarnaticAudio();
-    return () => audioRef.current?.close();
-  }, []);
 
   useEffect(() => {
     fetch("/api/curriculum/")
@@ -321,6 +376,15 @@ export default function CarnaticPage() {
     };
   }, [playbackState, totalDuration, playInLoop]);
 
+  // When playback reaches the end (state flips to "stopped") auto-stop recording
+  useEffect(() => {
+    if (playbackState === "stopped" && recorder.state === "recording") {
+      const exerciseName = currentExercise?.title || "sunaadam-recording";
+      recorder.stop(exerciseName);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [playbackState]);
+
   useEffect(() => {
     if (playbackState !== "playing" && playbackState !== "counting") {
       audioRef.current?.stop();
@@ -361,7 +425,7 @@ export default function CarnaticPage() {
       swaraIntervals,
       instrument,
       position.duration,
-      gamakamAmount,
+      0,
     );
   }, [
     playbackState,
@@ -377,19 +441,32 @@ export default function CarnaticPage() {
     swaraIntervals,
     instrument,
     noteVolume,
-    gamakamAmount,
   ]);
 
-  function playPlayback() {
+  async function playPlayback() {
     if (!currentExercise || totalDuration <= 0) return;
     audioRef.current?.resume?.();
     if (playbackState === "paused") {
       setPlaybackState("playing");
       return;
     }
-    audioRef.current?.playBell(shruthi);
-    setCountdown(3);
-    setPlaybackState("counting");
+
+    const startAudioAndCountdown = () => {
+      audioRef.current?.playBell(shruthi);
+      setCountdown(3);
+      setPlaybackState("counting");
+    };
+
+    // If record mode is on and we are not already recording, start the recorder first
+    if (recordMode && recorder.state === "idle") {
+      const exerciseName = currentExercise?.title || "sunaadam-recording";
+      await recorder.start(exerciseName, () => {
+        startAudioAndCountdown();
+      });
+      return;
+    }
+
+    startAudioAndCountdown();
   }
 
   function pausePlayback() {
@@ -403,6 +480,11 @@ export default function CarnaticPage() {
     setPlaybackTime(0);
     setCountdown(null);
     setPlaybackState("stopped");
+    // Stop recording if active
+    if (recorder.state === "recording") {
+      const exerciseName = currentExercise?.title || "sunaadam-recording";
+      recorder.stop(exerciseName);
+    }
   }
 
   function chooseSession(sessionId) {
@@ -522,38 +604,6 @@ export default function CarnaticPage() {
               <span className="talam-beats">{currentTalam?.beats || currentExercise?.talamBeats || 0} beats</span>
             </div>
           </div>
-        </div>
-
-        <div className="controls-divider" />
-
-        <div className="controls-row audio-row">
-          <label className="curriculum-select">
-            <span className="control-label">Shruthi</span>
-            <select value={shruthi} onChange={(event) => setShruthi(event.target.value)}>
-              {SHRUTHI_OPTIONS.map((group) => (
-                <optgroup label={group.label} key={group.label}>
-                  {group.notes.map((note) => (
-                    <option value={note.value} key={note.value}>{note.label}</option>
-                  ))}
-                </optgroup>
-              ))}
-            </select>
-          </label>
-
-          <label className="curriculum-select">
-            <span className="control-label">Instrument</span>
-            <select
-              value={instrument}
-              onChange={(event) => {
-                stopPlayback();
-                setInstrument(event.target.value);
-              }}
-            >
-              {CARNATIC_INSTRUMENTS.map((option) => (
-                <option value={option.id} key={option.id}>{option.label}</option>
-              ))}
-            </select>
-          </label>
 
           <label className="curriculum-select bpm-select">
             <span className="control-label">BPM</span>
@@ -568,10 +618,89 @@ export default function CarnaticPage() {
               }}
             />
           </label>
+        </div>
 
-          <label className="curriculum-select volume-select">
+        <div className="controls-divider" />
+
+        <div className="controls-row audio-row">
+          <label className="curriculum-select shruthi-pitch-select">
+            <span className="control-label">Shruthi</span>
+            <select value={shruthi} onChange={(event) => setShruthi(event.target.value)}>
+              {SHRUTHI_OPTIONS.map((group) => (
+                <optgroup label={group.label} key={group.label}>
+                  {group.notes.map((note) => (
+                    <option value={note.value} key={note.value}>{note.label}</option>
+                  ))}
+                </optgroup>
+              ))}
+            </select>
+          </label>
+
+          <label className="curriculum-select shruthi-drone-select">
+            <span className="control-label">Drone</span>
+            <select
+              value={shruthiDrone}
+              onChange={(event) => changeDrone(event.target.value)}
+              aria-label="Shruthi drone note"
+            >
+              <option value="pa">Pa</option>
+              <option value="ma">Ma</option>
+              <option value="ni">Ni</option>
+              <option value="null">Null</option>
+            </select>
+          </label>
+
+          <div className="shruthi-action-group">
+            <span className="control-label">Play Shruthi</span>
+            {shruthiActiveIndex >= 0 ? (
+              <button type="button" className="shruthi-stop-btn" onClick={stopShruthi}>
+                Stop Shruthi
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="shruthi-play-btn"
+                onClick={() => chooseShruthiNote(shruthiNoteIndex())}
+              >
+                Play Shruthi
+              </button>
+            )}
+          </div>
+
+          <label className="curriculum-select volume-select shruthi-volume-select">
             <span className="control-label">
-              <span>Volume</span>
+              <span>Shruthi Vol</span>
+              <span className="slider-value-pill">{shruthiVolume}%</span>
+            </span>
+            <input
+              type="range"
+              min="0"
+              max="100"
+              step="1"
+              value={shruthiVolume}
+              aria-label="Shruthi volume"
+              onChange={(event) => setShruthiVolume(Number(event.target.value))}
+            />
+          </label>
+
+          <label className="curriculum-select instrument-select">
+            <span className="control-label">Instrument</span>
+            <select
+              value={instrument}
+              onChange={(event) => {
+                stopPlayback();
+                setInstrument(event.target.value);
+              }}
+            >
+              {CARNATIC_INSTRUMENTS.map((option) => (
+                <option value={option.id} key={option.id}>{option.label}</option>
+              ))}
+            </select>
+          </label>
+
+          <label className="curriculum-select volume-select notes-volume-select">
+            <span className="control-label">
+              <span>Notes Vol</span>
               <span className="slider-value-pill">{noteVolume}%</span>
             </span>
             <input
@@ -585,148 +714,149 @@ export default function CarnaticPage() {
             />
           </label>
 
-          <label className="curriculum-select volume-select">
-            <span className="control-label">
-              <span>Gamakam</span>
-              <span className="slider-value-pill">{gamakamAmount}%</span>
-            </span>
-            <input
-              type="range"
-              min="0"
-              max="100"
-              step="1"
-              value={gamakamAmount}
-              aria-label="Gamakam amount"
-              onChange={(event) => setGamakamAmount(Number(event.target.value))}
-            />
-          </label>
-        </div>
-
-        <div className="controls-divider" />
-
-        {/* Shruthi Box controls */}
-        <div className="controls-row shruthi-box-row">
-          <div className="shruthi-box-group">
-            <span className="control-label">Play Shruthi</span>
-            <div className="shruthi-box-controls">
-              <select
-                value={shruthiDrone}
-                onChange={(event) => changeDrone(event.target.value)}
-                aria-label="Shruthi drone note"
-              >
-                <option value="pa">Pa</option>
-                <option value="ma">Ma</option>
-                <option value="ni">Ni</option>
-                <option value="null">Null</option>
-              </select>
-              {shruthiActiveIndex >= 0 ? (
-                <button type="button" className="shruthi-stop-btn" onClick={stopShruthi}>
-                  Stop Shruthi
-                </button>
-              ) : (
-                <button
-                  type="button"
-                  className="shruthi-play-btn"
-                  onClick={() => chooseShruthiNote(shruthiNoteIndex())}
-                >
-                  Play Shruthi
-                </button>
-              )}
-              <label className="shruthi-volume-label">
-                <span className="slider-value-pill">{shruthiVolume}%</span>
-                <input
-                  type="range"
-                  min="0"
-                  max="100"
-                  step="1"
-                  value={shruthiVolume}
-                  aria-label="Shruthi volume"
-                  onChange={(event) => setShruthiVolume(Number(event.target.value))}
-                />
-              </label>
-              {shruthiError && <span className="shruthi-error">{shruthiError}</span>}
-            </div>
-          </div>
+          {shruthiError && <span className="shruthi-error">{shruthiError}</span>}
         </div>
       </section>
 
-      <div className="transport-controls" role="group" aria-label="Exercise playback">
-        <div className="transport-column">
-          <button
-            type="button"
-            onClick={playPlayback}
-            disabled={playbackState === "playing" || playbackState === "counting" || !currentExercise || totalDuration <= 0}
-          >
-            {playbackState === "paused" ? "Resume" : "Play"}
-          </button>
-          <label className="loop-checkbox-label" title="Play continuously in a loop">
-            <input
-              type="checkbox"
-              checked={playInLoop}
-              onChange={(event) => setPlayInLoop(event.target.checked)}
-            />
-            <span>Repeat</span>
-          </label>
+      <div ref={exerciseCardRef} className="exercise-record-area">
+        <div
+          className={`transport-controls${isPlaying && !controlsVisible ? " transport-controls--auto-hidden" : ""}`}
+          role="group"
+          aria-label="Exercise playback"
+          onMouseEnter={() => {
+            setControlsVisible(true);
+            if (hideControlsTimeoutRef.current) clearTimeout(hideControlsTimeoutRef.current);
+          }}
+          onMouseLeave={() => {
+            if (isPlaying) {
+              hideControlsTimeoutRef.current = setTimeout(() => setControlsVisible(false), 2500);
+            }
+          }}
+        >
+          <div className="transport-column">
+            <button
+              type="button"
+              className={recordMode ? "record-btn" : undefined}
+              onClick={playPlayback}
+              disabled={
+                playbackState === "playing" ||
+                playbackState === "counting" ||
+                !currentExercise ||
+                totalDuration <= 0 ||
+                recorder.state === "requesting" ||
+                recorder.state === "processing" ||
+                recorder.state === "ready"
+              }
+            >
+              {recorder.state === "requesting"
+                ? "Starting…"
+                : recorder.state === "processing"
+                ? "Preparing…"
+                : recordMode
+                ? (playbackState === "paused" ? "Resume" : "Screen Record")
+                : (playbackState === "paused" ? "Resume" : "Play")}
+            </button>
+            <label className="loop-checkbox-label" title="Play continuously in a loop">
+              <input
+                type="checkbox"
+                checked={playInLoop}
+                onChange={(event) => setPlayInLoop(event.target.checked)}
+              />
+              <span>Repeat</span>
+            </label>
+            <label
+              className="loop-checkbox-label record-checkbox-label"
+              title="Record only the exercise card with animation and audio"
+            >
+              <input
+                type="checkbox"
+                checked={recordMode}
+                onChange={(event) => setRecordMode(event.target.checked)}
+                disabled={
+                  recorder.state === "recording" ||
+                  recorder.state === "requesting" ||
+                  recorder.state === "processing" ||
+                  recorder.state === "ready"
+                }
+              />
+              <span>Record</span>
+            </label>
+            {recorder.error && (
+              <span className="recorder-error">{recorder.error}</span>
+            )}
+            {recorder.state === "recording" && (
+              <span className="recorder-indicator">● Recording…</span>
+            )}
+          </div>
+          <div className="transport-column">
+            <button
+              type="button"
+              className="secondary"
+              onClick={pausePlayback}
+              disabled={playbackState !== "playing"}
+            >
+              Pause
+            </button>
+            <button
+              type="button"
+              className="secondary"
+              onClick={stopPlayback}
+              disabled={playbackState === "stopped"}
+            >
+              Stop
+            </button>
+          </div>
+          <div className="beat-image-placeholder" aria-live="polite">
+            <span className="beat-count">
+              {Number.isFinite(currentBeatCount) ? currentBeatCount : "—"}
+            </span>
+            {Number.isFinite(currentBeatImageNumber) && (
+              <img
+                key={currentBeatImageNumber}
+                src={`/beat-images/beat-${currentBeatImageNumber}.jpeg`}
+                alt={`Beat ${currentBeatImageNumber}`}
+                onError={(event) => {
+                  event.currentTarget.hidden = true;
+                }}
+                onLoad={(event) => {
+                  event.currentTarget.hidden = false;
+                }}
+              />
+            )}
+          </div>
         </div>
-        <div className="transport-column">
-          <button
-            type="button"
-            className="secondary"
-            onClick={pausePlayback}
-            disabled={playbackState !== "playing"}
-          >
-            Pause
-          </button>
-          <button
-            type="button"
-            className="secondary"
-            onClick={stopPlayback}
-            disabled={playbackState === "stopped"}
-          >
-            Stop
-          </button>
-        </div>
-        <div className="beat-image-placeholder" aria-live="polite">
-          <span className="beat-count">
-            {Number.isFinite(currentBeatCount) ? currentBeatCount : "—"}
-          </span>
-          {Number.isFinite(currentBeatImageNumber) && (
-            <img
-              key={currentBeatImageNumber}
-              src={`/beat-images/beat-${currentBeatImageNumber}.jpeg`}
-              alt={`Beat ${currentBeatImageNumber}`}
-              onError={(event) => {
-                event.currentTarget.hidden = true;
-              }}
-              onLoad={(event) => {
-                event.currentTarget.hidden = false;
-              }}
-            />
-          )}
-        </div>
+
+        {countdown !== null && (
+          <div className="count-in" key={countdown} role="status" aria-live="assertive">
+            {countdown}
+          </div>
+        )}
+
+        {currentExercise ? (
+          <Exercise
+            exercise={currentExercise}
+            sections={exerciseSections}
+            tableSchedule={displaySchedule}
+            beats={selectedBeats}
+            cyclesPerRow={cyclesPerRow}
+            beatGroups={beatGroups}
+            beatNumbers={currentTalam?.beatNumbers || []}
+            playbackTime={playbackTime}
+            bpm={bpm}
+            onToggleExclude={toggleExcludePart}
+            isRecording={recorder.state === "recording"}
+          />
+        ) : (
+          <p className="status">No exercises are assigned to this session yet.</p>
+        )}
       </div>
 
-      {countdown !== null && (
-        <div className="count-in" key={countdown} role="status" aria-live="assertive">
-          {countdown}
-        </div>
-      )}
-
-      {currentExercise ? (
-        <Exercise
-          exercise={currentExercise}
-          sections={exerciseSections}
-          tableSchedule={displaySchedule}
-          beats={selectedBeats}
-          cyclesPerRow={cyclesPerRow}
-          beatGroups={beatGroups}
-          beatNumbers={currentTalam?.beatNumbers || []}
-          playbackTime={playbackTime}
-          bpm={bpm}
-          onToggleExclude={toggleExcludePart}
+      {recorder.recordingResult && (
+        <SaveVideoModal
+          recording={recorder.recordingResult}
+          onSave={(filename) => recorder.saveRecording(filename)}
+          onCancel={() => recorder.discardRecording()}
         />
-      ) : (
-        <p className="status">No exercises are assigned to this session yet.</p>
       )}
     </main>
   );
@@ -737,12 +867,14 @@ function getExerciseSections(exercise) {
   if (exercise.sections?.length) {
     return exercise.sections.map((section) => ({
       ...section,
+      description: section.description || "",
       notes: parseCarnaticNotes(section.notes),
       lyrics: parseLyrics(section.lyrics),
     }));
   }
   return [{
     title: "Main",
+    description: "",
     notes: parseCarnaticNotes(exercise.notes),
     lyrics: parseLyrics(exercise.lyrics),
   }];
@@ -759,6 +891,7 @@ function Exercise({
   playbackTime,
   bpm,
   onToggleExclude,
+  isRecording,
 }) {
   const repeatToCompleteTalam = exercise?.repeatToCompleteTalam ?? true;
   const completeTalamWithEmptyNotes =
@@ -767,6 +900,7 @@ function Exercise({
     exercise?.complete_talam_with_empty_notes ??
     false;
   const notes = sections.flatMap((section) => section.notes);
+  const sectionsWithDescription = sections.filter((section) => Boolean(section.description?.trim()));
   let previousSectionKey = null;
   const tableElements = tableSchedule.map((table, index) => {
     const sectionHeading = table.sectionKey !== previousSectionKey
@@ -802,7 +936,7 @@ function Exercise({
   });
 
   return (
-    <section className="exercise-card">
+    <section className={`exercise-card${isRecording ? " exercise-card--recording" : ""}`}>
       <div className="exercise-heading">
         <div>
           <p className="card-label">CARNATIC LESSON</p>
@@ -811,10 +945,23 @@ function Exercise({
             <p className="exercise-description">{exercise.description}</p>
           )}
         </div>
-      <span className="note-count">
-        {notes.length} notes · {exercise.noteDurationFixed ? "fixed duration" : "basic lesson"}
-      </span>
+        <span className="note-count">
+          {notes.length} notes · {exercise.noteDurationFixed ? "fixed duration" : "basic lesson"}
+        </span>
       </div>
+
+      {sectionsWithDescription.length > 0 && (
+        <div className="exercise-sections-description">
+          {sectionsWithDescription.map((sec, index) => (
+            <div className="section-description-item" key={sec.id || `sec-desc-${index}`}>
+              {(sections.length > 1 || (sec.title && sec.title !== "Main" && sec.title.trim().toLowerCase() !== exercise.title?.trim().toLowerCase())) && (
+                <h4 className="section-description-title">{sec.title}</h4>
+              )}
+              <p className="section-description-text">{sec.description}</p>
+            </div>
+          ))}
+        </div>
+      )}
 
       <div className="table-list">{tableElements}</div>
     </section>
@@ -1024,18 +1171,21 @@ function NoteTable({
     ? Math.min(repeatCount, Math.floor((playbackTime - tableStartTime) / tableDuration) + 1)
     : 0;
   const columnGroups = getColumnGroups(beats, cyclesPerRow, beatGroups);
+  const columnCount = columnGroups.length;
+  const isWideTalam = columnCount >= 12 || beats >= 12;
+  const isVeryWideTalam = columnCount >= 15 || beats >= 15;
 
   useEffect(() => {
     if (!hasPlaybackPosition || !activeCellRef.current) return;
     activeCellRef.current.scrollIntoView({
       behavior: "smooth",
       block: "center",
-      inline: "center",
+      inline: "nearest",
     });
   }, [hasPlaybackPosition, currentRowIndex, currentBeatIndex]);
 
   return (
-    <section className={`note-table-section ${tableIsActive ? "table-playing" : ""} ${isExcluded ? "table-section-excluded" : ""} notes-per-beat-${notesPerBeat}`}>
+    <section className={`note-table-section ${tableIsActive ? "table-playing" : ""} ${isExcluded ? "table-section-excluded" : ""} notes-per-beat-${notesPerBeat} talam-beats-${beats} ${isWideTalam ? "wide-talam" : ""} ${isVeryWideTalam ? "very-wide-talam" : ""}`}>
       <div className="table-title">
         <div className="table-title-meta">
           <h3>{notesPerBeat} note{notesPerBeat > 1 ? "s" : ""} per beat</h3>
@@ -1060,7 +1210,7 @@ function NoteTable({
           <span>Table notes excluded from display and playback. Uncheck Exclude to view and play.</span>
         </div>
       ) : (
-        <div className="table-scroll">
+        <div className={`table-scroll ${isWideTalam ? "wide-talam-scroll" : ""}`}>
           <table>
             <thead>
               <tr>
@@ -1078,7 +1228,7 @@ function NoteTable({
                     key={groupIndex}
                     scope="col"
                   >
-                    Beat {group[0] + 1}{group.length > 1 ? `–${group[group.length - 1] + 1}` : ""}
+                    <span className="beat-prefix">Beat </span>{group[0] + 1}{group.length > 1 ? `–${group[group.length - 1] + 1}` : ""}
                   </th>
                 ))}
               </tr>

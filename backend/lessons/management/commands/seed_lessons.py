@@ -20,14 +20,15 @@ MELAKARTA_NAMES = [
     "Dhatuvardhani", "Nasikabhushani", "Kosalam", "Rasikapriya",
 ]
 
-RG_VARIANTS = [(1, 1), (1, 3), (1, 4), (2, 3), (2, 4), (3, 4)]
+RG_VARIANTS = [(1, 2), (1, 3), (1, 4), (2, 3), (2, 4), (3, 4)]
 DN_VARIANTS = [(8, 9), (8, 10), (8, 11), (9, 10), (9, 11), (10, 11)]
 
 
 def standard_melakarta_intervals(number):
-    position = (number - 1) % 6
-    r, g = RG_VARIANTS[position]
-    d, n = DN_VARIANTS[position]
+    chakra_index = ((number - 1) // 6) % 6
+    dn_index = (number - 1) % 6
+    r, g = RG_VARIANTS[chakra_index]
+    d, n = DN_VARIANTS[dn_index]
     m = 5 if number <= 36 else 6
     return {"S": 0, "R": r, "G": g, "M": m, "P": 7, "D": d, "N": n}
 
