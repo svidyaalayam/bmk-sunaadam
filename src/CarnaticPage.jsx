@@ -1,4 +1,6 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import html2canvas from "html2canvas";
+import { flushSync } from "react-dom";
 import {
   buildTableSchedule,
   buildTalamRows,
@@ -12,9 +14,12 @@ import {
 } from "./carnatic";
 import { CARNATIC_INSTRUMENTS, createCarnaticAudio } from "./carnaticAudio";
 import { createShruthiBox, SHRUTHI_NOTES } from "./shruthiAudio";
-import { useScreenRecorder } from "./useScreenRecorder";
-import { SaveVideoModal } from "./SaveVideoModal";
-import { RecordQualityModal } from "./RecordQualityModal";
+import { RECORDING_PRESETS } from "./useScreenRecorder";
+import {
+  createLessonVideo,
+  selectLessonVideoEncoder,
+} from "./exportLessonVideo";
+import { ExportVideoModal } from "./ExportVideoModal";
 
 const FALLBACK_SESSIONS = [
   { id: "carnatic", name: "Carnatic", parentId: null, allowRagamChange: false },
@@ -98,14 +103,34 @@ export default function CarnaticPage() {
   const audioPositionRef = useRef(null);
   const bellPositionRef = useRef(null);
 
-  // Record-mode checkbox state
-  const [recordMode, setRecordMode] = useState(false);
+  const [exportModalOpen, setExportModalOpen] = useState(false);
+  const [exportPresetKey, setExportPresetKey] = useState(() => {
+    try {
+      const saved = localStorage.getItem("carnatic_record_preset");
+      if (saved && RECORDING_PRESETS[saved]) return saved;
+    } catch {
+      // Use the compact preset when browser storage is unavailable.
+    }
+    return "compact";
+  });
+  const [exportingVideo, setExportingVideo] = useState(false);
+  const [exportProgress, setExportProgress] = useState(0);
+  const [exportError, setExportError] = useState("");
+  const [exportFormat, setExportFormat] = useState("");
+  const [readyLessonVideo, setReadyLessonVideo] = useState(null);
+  const lessonVideoUrlRef = useRef(null);
 
   // Auto-hide transport controls during playback; reveal on mouse movement for 2.5s
   const [controlsVisible, setControlsVisible] = useState(true);
   const hideControlsTimeoutRef = useRef(null);
 
   const isPlaying = playbackState === "playing" || playbackState === "counting";
+
+  useEffect(() => () => {
+    if (lessonVideoUrlRef.current) {
+      URL.revokeObjectURL(lessonVideoUrlRef.current);
+    }
+  }, []);
 
   useEffect(() => {
     if (!isPlaying) {
@@ -145,12 +170,6 @@ export default function CarnaticPage() {
 
   // Ref to the exercise-card DOM element for cropped recording
   const exerciseCardRef = useRef(null);
-  const recorder = useScreenRecorder({
-    targetRef: exerciseCardRef,
-    audioRef,
-    shruthiBoxRef,
-  });
-
   // Initialize Carnatic audio and Shruthi box sharing the same AudioContext
   useEffect(() => {
     const audio = createCarnaticAudio();
@@ -376,15 +395,6 @@ export default function CarnaticPage() {
     };
   }, [playbackState, totalDuration, playInLoop]);
 
-  // When playback reaches the end (state flips to "stopped") auto-stop recording
-  useEffect(() => {
-    if (playbackState === "stopped" && recorder.state === "recording") {
-      const exerciseName = currentExercise?.title || "sunaadam-recording";
-      recorder.stop(exerciseName);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [playbackState]);
-
   useEffect(() => {
     if (playbackState !== "playing" && playbackState !== "counting") {
       audioRef.current?.stop();
@@ -457,16 +467,175 @@ export default function CarnaticPage() {
       setPlaybackState("counting");
     };
 
-    // If record mode is on and we are not already recording, start the recorder first
-    if (recordMode && recorder.state === "idle") {
-      const exerciseName = currentExercise?.title || "sunaadam-recording";
-      await recorder.start(exerciseName, () => {
-        startAudioAndCountdown();
-      });
-      return;
-    }
-
     startAudioAndCountdown();
+  }
+
+  async function exportLessonVideo(presetKey = exportPresetKey) {
+    if (exportingVideo || !currentExercise || totalDuration <= 0) return;
+    setExportError("");
+    setExportProgress(0);
+    setExportingVideo(true);
+    if (lessonVideoUrlRef.current) {
+      URL.revokeObjectURL(lessonVideoUrlRef.current);
+      lessonVideoUrlRef.current = null;
+    }
+    setReadyLessonVideo(null);
+    try {
+      const encoderSelection = await selectLessonVideoEncoder(presetKey);
+      if (!encoderSelection.encoder) {
+        setExportError(encoderSelection.message);
+        return;
+      }
+      setExportFormat(encoderSelection.encoder.extension.toUpperCase());
+
+      const target = exerciseCardRef.current?.querySelector(".exercise-card");
+      if (!target) {
+        setExportError("The lesson display could not be found.");
+        return;
+      }
+
+      const frames = [];
+      const audioEvents = [];
+      const volume = 0.18 * (noteVolume / 100);
+      for (const table of playbackSchedule) {
+        if (table.isExcluded || table.duration <= 0) continue;
+        const scheduledNotes = [];
+        const rows = buildTalamRows(
+          table.notes,
+          table.beats,
+          table.notesPerBeat,
+          table.cyclesPerRow,
+          table.repeatToCompleteTalam,
+          table.completeTalamWithEmptyNotes,
+        );
+        const secondsPerUnit = 60 / table.bpm / table.notesPerBeat / 4;
+        let elapsedUnits = 0;
+        for (let rowIndex = 0; rowIndex < rows.length; rowIndex += 1) {
+          for (let beatIndex = 0; beatIndex < rows[rowIndex].length; beatIndex += 1) {
+            const cell = rows[rowIndex][beatIndex];
+            for (let noteIndex = 0; noteIndex < cell.length; noteIndex += 1) {
+              const note = cell[noteIndex];
+              const timestamp = table.tableStartTime + elapsedUnits * secondsPerUnit;
+              frames.push({ timestamp, duration: 0 });
+              if (noteIndex === 0) {
+                const animationTimestamp = timestamp + (60 / table.bpm) * 0.9;
+                if (animationTimestamp < table.tableStartTime + table.duration) {
+                  frames.push({ timestamp: animationTimestamp, duration: 0 });
+                }
+                if (isBeatGroupStart(beatIndex, table.beats, beatGroups)) {
+                  audioEvents.push({ type: "bell", time: timestamp });
+                }
+              }
+              scheduledNotes.push({ note, timestamp, secondsPerUnit });
+              elapsedUnits += noteDurationUnits(note);
+            }
+          }
+        }
+
+        for (let index = 0; index < scheduledNotes.length; index += 1) {
+          const current = scheduledNotes[index];
+          if (current.note.startsWith(";")) continue;
+          let duration = noteDurationUnits(current.note) * current.secondsPerUnit;
+          for (let nextIndex = index + 1; nextIndex < scheduledNotes.length; nextIndex += 1) {
+            const next = scheduledNotes[nextIndex];
+            if (!next.note.startsWith(";")) break;
+            duration += noteDurationUnits(next.note) * next.secondsPerUnit;
+          }
+          audioEvents.push({
+            type: "note",
+            note: current.note,
+            time: current.timestamp,
+            duration,
+            volume,
+          });
+        }
+      }
+
+      audioEvents.sort((first, second) => first.time - second.time);
+      frames.sort((first, second) => first.timestamp - second.timestamp);
+      const uniqueFrames = frames.filter(
+        (frame, index) => index === 0 || frame.timestamp > frames[index - 1].timestamp,
+      );
+      uniqueFrames.forEach((frame, index) => {
+        const nextFrame = uniqueFrames[index + 1];
+        frame.duration = nextFrame
+          ? nextFrame.timestamp - frame.timestamp
+          : totalDuration - frame.timestamp;
+      });
+      if (!uniqueFrames.length || !audioEvents.some((event) => event.type === "note")) {
+        setExportError("This lesson has no playable notes to export.");
+        return;
+      }
+
+      setExportError("");
+      const blob = await createLessonVideo({
+        duration: totalDuration,
+        encoder: encoderSelection.encoder,
+        frames: uniqueFrames,
+        title: currentExercise.title,
+        shruthi,
+        swaraIntervals,
+        instrument,
+        audioEvents,
+        renderFrame: async (timestamp) => {
+          playbackTimeRef.current = timestamp;
+          flushSync(() => setPlaybackTime(timestamp));
+          return html2canvas(target, {
+            backgroundColor: "#fff8ed",
+            logging: false,
+            useCORS: true,
+            onclone: (clonedDocument) => {
+              const activeTable = clonedDocument.querySelector(
+                ".exercise-card .note-table-section.table-playing",
+              );
+              clonedDocument.querySelectorAll(".note-table-section").forEach((table) => {
+                if (table !== activeTable) table.remove();
+              });
+              clonedDocument.querySelectorAll(".exercise-section-title").forEach((heading) => {
+                heading.remove();
+              });
+              clonedDocument.querySelector(".exercise-sections-description")?.remove();
+            },
+          });
+        },
+        renderBeatFrame: async () => {
+          const beatPanel = exerciseCardRef.current?.querySelector(".beat-image-placeholder");
+          if (!beatPanel) throw new Error("The beat animation image could not be found.");
+          return html2canvas(beatPanel, {
+            backgroundColor: "#fff8ed",
+            logging: false,
+            useCORS: true,
+          });
+        },
+        onProgress: (progress) => setExportProgress(progress),
+      });
+      const file = createLessonVideoDownload(
+        blob,
+        currentExercise.title,
+        encoderSelection.encoder.preset,
+        encoderSelection.encoder.extension,
+      );
+      lessonVideoUrlRef.current = file.url;
+      setReadyLessonVideo(file);
+    } catch (error) {
+      setExportError(
+        error instanceof Error ? error.message : "The lesson video could not be created.",
+      );
+    } finally {
+      playbackTimeRef.current = 0;
+      setPlaybackTime(0);
+      setExportingVideo(false);
+    }
+  }
+
+  function selectExportPreset(presetKey) {
+    setExportPresetKey(presetKey);
+    if (lessonVideoUrlRef.current) {
+      URL.revokeObjectURL(lessonVideoUrlRef.current);
+      lessonVideoUrlRef.current = null;
+    }
+    setReadyLessonVideo(null);
+    setExportError("");
   }
 
   function pausePlayback() {
@@ -480,11 +649,6 @@ export default function CarnaticPage() {
     setPlaybackTime(0);
     setCountdown(null);
     setPlaybackState("stopped");
-    // Stop recording if active
-    if (recorder.state === "recording") {
-      const exerciseName = currentExercise?.title || "sunaadam-recording";
-      recorder.stop(exerciseName);
-    }
   }
 
   function chooseSession(sessionId) {
@@ -506,7 +670,8 @@ export default function CarnaticPage() {
     );
   }
 
-  const currentPlaybackPosition = playbackState === "playing"
+  const isPlaybackAnimating = playbackState === "playing" || exportingVideo;
+  const currentPlaybackPosition = isPlaybackAnimating
     ? getPlaybackNotePosition(
       playbackSchedule,
       currentTalam?.beatNumbers || [],
@@ -523,7 +688,7 @@ export default function CarnaticPage() {
     currentPlaybackPosition?.beatCount !== undefined
       ? Number(currentPlaybackPosition.beatCount)
       : null;
-  const currentBeatProgress = playbackState === "playing"
+  const currentBeatProgress = isPlaybackAnimating
     ? getPlaybackBeatProgress(playbackSchedule, playbackTime, bpm)
     : 0;
   const currentBeatImageNumber = Number.isFinite(currentBeatNumber) && currentBeatProgress >= 0.9
@@ -716,6 +881,25 @@ export default function CarnaticPage() {
 
           {shruthiError && <span className="shruthi-error">{shruthiError}</span>}
         </div>
+
+        <div className="export-controls-row">
+          <button
+            type="button"
+            className="secondary"
+            onClick={() => {
+              setExportError("");
+              setExportModalOpen(true);
+            }}
+            disabled={
+              exportingVideo ||
+              playbackState !== "stopped" ||
+              !currentExercise ||
+              totalDuration <= 0
+            }
+          >
+            Export Video
+          </button>
+        </div>
       </section>
 
       <div ref={exerciseCardRef} className="exercise-record-area">
@@ -736,25 +920,16 @@ export default function CarnaticPage() {
           <div className="transport-column">
             <button
               type="button"
-              className={recordMode ? "record-btn" : undefined}
               onClick={playPlayback}
               disabled={
                 playbackState === "playing" ||
                 playbackState === "counting" ||
                 !currentExercise ||
                 totalDuration <= 0 ||
-                recorder.state === "requesting" ||
-                recorder.state === "processing" ||
-                recorder.state === "ready"
+                exportingVideo
               }
             >
-              {recorder.state === "requesting"
-                ? "Starting…"
-                : recorder.state === "processing"
-                ? "Preparing…"
-                : recordMode
-                ? (playbackState === "paused" ? "Resume" : "Screen Record")
-                : (playbackState === "paused" ? "Resume" : "Play")}
+              {playbackState === "paused" ? "Resume" : "Play"}
             </button>
             <label className="loop-checkbox-label" title="Play continuously in a loop">
               <input
@@ -764,29 +939,6 @@ export default function CarnaticPage() {
               />
               <span>Repeat</span>
             </label>
-            <label
-              className="loop-checkbox-label record-checkbox-label"
-              title="Record only the exercise card with animation and audio"
-            >
-              <input
-                type="checkbox"
-                checked={recordMode}
-                onChange={(event) => setRecordMode(event.target.checked)}
-                disabled={
-                  recorder.state === "recording" ||
-                  recorder.state === "requesting" ||
-                  recorder.state === "processing" ||
-                  recorder.state === "ready"
-                }
-              />
-              <span>Record</span>
-            </label>
-            {recorder.error && (
-              <span className="recorder-error">{recorder.error}</span>
-            )}
-            {recorder.state === "recording" && (
-              <span className="recorder-indicator">● Recording…</span>
-            )}
           </div>
           <div className="transport-column">
             <button
@@ -844,20 +996,38 @@ export default function CarnaticPage() {
             playbackTime={playbackTime}
             bpm={bpm}
             onToggleExclude={toggleExcludePart}
-            isRecording={recorder.state === "recording"}
           />
         ) : (
           <p className="status">No exercises are assigned to this session yet.</p>
         )}
       </div>
 
-      {recorder.recordingResult && (
-        <SaveVideoModal
-          recording={recorder.recordingResult}
-          onSave={(filename) => recorder.saveRecording(filename)}
-          onCancel={() => recorder.discardRecording()}
-        />
-      )}
+      <footer className="site-contact">
+        <div>
+          <p className="card-label">SUNAADAM</p>
+          <h2>Continue your musical journey</h2>
+        </div>
+        <div className="site-contact-links">
+          <a href="https://sunaadam.balamukundam.com" target="_blank" rel="noreferrer">
+            Register at sunaadam.balamukundam.com
+          </a>
+          <a href="tel:+447930191457">Contact: +447930191457</a>
+        </div>
+      </footer>
+
+      <ExportVideoModal
+        isOpen={exportModalOpen}
+        selectedPresetKey={exportPresetKey}
+        onSelectPreset={selectExportPreset}
+        onProcess={exportLessonVideo}
+        onCancel={() => {
+          if (!exportingVideo) setExportModalOpen(false);
+        }}
+        isProcessing={exportingVideo}
+        progress={{ value: exportProgress, format: exportFormat }}
+        error={exportError}
+        video={readyLessonVideo}
+      />
     </main>
   );
 }
@@ -891,7 +1061,6 @@ function Exercise({
   playbackTime,
   bpm,
   onToggleExclude,
-  isRecording,
 }) {
   const repeatToCompleteTalam = exercise?.repeatToCompleteTalam ?? true;
   const completeTalamWithEmptyNotes =
@@ -936,7 +1105,7 @@ function Exercise({
   });
 
   return (
-    <section className={`exercise-card${isRecording ? " exercise-card--recording" : ""}`}>
+    <section className="exercise-card">
       <div className="exercise-heading">
         <div>
           <p className="card-label">CARNATIC LESSON</p>
@@ -966,6 +1135,21 @@ function Exercise({
       <div className="table-list">{tableElements}</div>
     </section>
   );
+}
+
+function createLessonVideoDownload(blob, title, preset, format) {
+  const safeTitle = String(title || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-|-$/g, "") || "carnatic-lesson";
+  const extension = blob.type === "video/webm" ? "webm" : "mp4";
+  return {
+    url: URL.createObjectURL(blob),
+    filename: `${safeTitle}.${extension}`,
+    preset,
+    format,
+  };
 }
 
 function ordinal(number) {

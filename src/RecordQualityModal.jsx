@@ -7,7 +7,7 @@ const STORAGE_KEY = "carnatic_record_preset";
  * RecordQualityModal
  *
  * Prompts the user before recording starts to choose their desired level
- * of accuracy, resolution, and file size (e.g. ~1 MB per minute, medium, high accuracy).
+ * of accuracy, resolution, and file size (compact or balanced).
  */
 export function RecordQualityModal({ isOpen, onConfirm, onCancel }) {
   const [selectedKey, setSelectedKey] = useState(() => {

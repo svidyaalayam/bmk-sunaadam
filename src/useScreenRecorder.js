@@ -6,7 +6,7 @@
  * in standard 16:9 YouTube aspect ratio,
  * alongside direct digital audio (notes, bell, and shruthi drone).
  *
- * Supports multiple accuracy / quality levels (from ~1 MB per minute up to High / Ultra),
+ * Supports compact and balanced recording quality levels,
  * and provides a Save / Cancel dialog workflow instead of auto-downloading.
  */
 
@@ -38,30 +38,6 @@ export const RECORDING_PRESETS = {
     fps: 30,
     videoBitrate: 450000,
     audioBitrate: 64000,
-  },
-  high: {
-    id: "high",
-    label: "High (~8 MB / min)",
-    accuracy: "High accuracy / Full HD 1080p",
-    description: "Target ~8 MB for 1-minute video · 1080p Full HD · 1.0 Mbps video · 128 kbps audio",
-    badge: "High Accuracy",
-    width: 1920,
-    height: 1080,
-    fps: 30,
-    videoBitrate: 1000000,
-    audioBitrate: 128000,
-  },
-  ultra: {
-    id: "ultra",
-    label: "Ultra (~22 MB / min)",
-    accuracy: "Maximum accuracy / Studio fidelity",
-    description: "Target ~22 MB for 1-minute video · 1080p Full HD · 3.0 Mbps video · 192 kbps audio",
-    badge: "Maximum",
-    width: 1920,
-    height: 1080,
-    fps: 30,
-    videoBitrate: 3000000,
-    audioBitrate: 192000,
   },
 };
 

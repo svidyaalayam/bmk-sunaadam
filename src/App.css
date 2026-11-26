@@ -590,12 +590,6 @@ button:disabled {
   transition: box-shadow 0.3s ease, border-color 0.3s ease;
 }
 
-/* Red glow border while recording */
-.exercise-card--recording {
-  border-color: #c0392b;
-  box-shadow: 0 0 0 3px rgba(192, 57, 43, 0.25), 0 18px 36px rgba(28, 22, 18, 0.07);
-}
-
 .exercise-heading {
   display: flex;
   align-items: end;
@@ -808,68 +802,70 @@ button:disabled {
   height: 16px;
 }
 
-/* Record checkbox — red accent */
-.record-checkbox-label {
-  border-color: #c0392b;
-  color: #7a1a0d;
+.export-controls-row {
+  display: flex;
+  justify-content: flex-end;
 }
 
-.record-checkbox-label:hover {
-  background: #fde8e4;
-  border-color: #a93226;
+.export-video-modal-card {
+  max-width: 760px;
+  max-height: calc(100vh - 40px);
+  overflow-y: auto;
 }
 
-.record-checkbox-label input[type="checkbox"] {
-  accent-color: #c0392b;
+.export-video-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  color: #5e5146;
+  font-size: 14px;
 }
 
-/* Record button — glowing red when in record mode */
-.transport-controls button.record-btn {
-  background: #c0392b;
-  color: #fff;
-  box-shadow: 0 0 0 2px #c0392b40, 0 2px 8px rgba(192, 57, 43, 0.35);
-  animation: record-pulse 1.6s ease-in-out infinite;
+.export-video-progress progress {
+  width: 100%;
+  accent-color: #c4552a;
 }
 
-.transport-controls button.record-btn:disabled {
-  background: #e07c72;
-  box-shadow: none;
-  animation: none;
-}
-
-@keyframes record-pulse {
-  0%, 100% { box-shadow: 0 0 0 2px #c0392b40, 0 2px 8px rgba(192, 57, 43, 0.35); }
-  50%       { box-shadow: 0 0 0 5px #c0392b30, 0 2px 14px rgba(192, 57, 43, 0.55); }
-}
-
-/* Recording-active indicator pill */
-.recorder-indicator {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  margin-top: 4px;
-  padding: 5px 11px;
-  background: #c0392b;
-  color: #fff;
-  font-size: 12px;
-  font-weight: 600;
-  border-radius: 20px;
-  animation: record-blink 1.2s step-start infinite;
-}
-
-@keyframes record-blink {
-  0%, 100% { opacity: 1; }
-  50%       { opacity: 0.45; }
-}
-
-/* Error message below record checkbox */
-.recorder-error {
-  display: block;
-  margin-top: 4px;
-  font-size: 12px;
+.export-video-error {
+  margin: 0;
   color: #c0392b;
-  line-height: 1.4;
-  max-width: 200px;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.export-video-download {
+  text-decoration: none;
+}
+
+.site-contact {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  margin-top: 36px;
+  padding: 24px 4px;
+  border-top: 1px solid #d9cbb6;
+}
+
+.site-contact h2 {
+  margin: 0;
+  font-size: clamp(20px, 3vw, 26px);
+  font-weight: 500;
+}
+
+.site-contact-links {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 10px;
+}
+
+.site-contact-links a {
+  color: #a84320;
+  font-size: 15px;
+  font-weight: 600;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 3px;
 }
 
 /* Video Recording Save/Discard Modal */
@@ -1541,6 +1537,16 @@ td {
     align-items: flex-start;
     flex-direction: column;
     gap: 8px;
+  }
+
+  .site-contact {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 16px;
+  }
+
+  .site-contact-links {
+    align-items: flex-start;
   }
 
   .shruthi-card {
