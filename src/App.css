@@ -6,6 +6,7 @@
 
 .top-nav {
   display: flex;
+  align-items: center;
   gap: 22px;
   margin-bottom: 52px;
   color: #7a6a58;
@@ -25,6 +26,181 @@
 .top-nav [aria-current="page"] {
   color: #1c1612;
   font-weight: 700;
+}
+
+.account-menu {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-left: auto;
+  color: #1c1612;
+  font-size: 14px;
+}
+
+.account-menu .account-name,
+.account-menu .account-link {
+  padding: 8px 14px;
+  font-family: inherit;
+  font-size: 14px;
+  line-height: 1.2;
+}
+
+.account-menu .account-name {
+  background: #1c1612;
+  color: #fffaf3;
+}
+
+.account-menu .account-link {
+  background: transparent;
+  color: #5e5146;
+}
+
+.account-status {
+  color: #8c2f20;
+  font-size: 12px;
+}
+
+.account-backdrop {
+  position: fixed;
+  z-index: 10000;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  overflow-y: auto;
+  padding: 24px;
+  background: rgba(25, 20, 16, 0.62);
+}
+
+.account-dialog {
+  position: relative;
+  width: min(100%, 560px);
+  max-height: min(90vh, 900px);
+  overflow-y: auto;
+  padding: 30px;
+  border: 1px solid #d9cbb6;
+  border-radius: 18px;
+  background: #fffdfa;
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.28);
+}
+
+.account-dialog h2 {
+  margin: 0 40px 20px 0;
+  font-size: 30px;
+  font-weight: 500;
+}
+
+.account-close {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  width: 38px;
+  height: 38px;
+  padding: 0;
+  background: transparent;
+  color: #1c1612;
+  font-size: 28px;
+  line-height: 1;
+}
+
+.account-form {
+  display: grid;
+  gap: 14px;
+}
+
+.account-form > label,
+.account-field-row > label {
+  display: grid;
+  gap: 6px;
+  color: #5e5146;
+  font-size: 14px;
+}
+
+.account-form input,
+.account-form select,
+.account-form textarea {
+  width: 100%;
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid #cdbda8;
+  border-radius: 8px;
+  background: #fff;
+  color: #1c1612;
+  font: 16px Georgia, "Times New Roman", serif;
+}
+
+.account-form input:read-only {
+  background: #f1ece4;
+  color: #665c51;
+}
+
+.account-form textarea {
+  resize: vertical;
+}
+
+.account-field-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.account-form > button[type="submit"] {
+  justify-self: start;
+  padding: 11px 22px;
+  font-size: 16px;
+}
+
+.account-form-links {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.account-form .account-link {
+  justify-self: start;
+  padding: 4px 0;
+  background: transparent;
+  color: #9c4325;
+  font-size: 14px;
+}
+
+.account-helper,
+.account-role,
+.account-form > p {
+  margin: 0;
+  color: #5e5146;
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+.account-error,
+.account-message {
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 8px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.account-error {
+  background: #fff0ed;
+  color: #8c2f20;
+}
+
+.account-message {
+  background: #edf6eb;
+  color: #315a2b;
+}
+
+.curriculum-api-error {
+  margin: -28px 0 24px;
+  padding: 12px 16px;
+  border: 1px solid #d5a35b;
+  border-radius: 8px;
+  background: #fff6e8;
+  color: #69430f;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
 }
 
 .eyebrow {
@@ -513,6 +689,722 @@ button:disabled {
   box-shadow: inset 0 0 0 2px #1c1612;
 }
 
+.talam-recording-group {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.recording-signal-indicator {
+  display: flex;
+  width: 150px;
+  min-width: 0;
+  height: 58px;
+  align-items: center;
+  gap: 9px;
+  padding: 8px 10px;
+  border: 1px solid #d9cbb6;
+  border-radius: 10px;
+  background: #fffdfa;
+  color: #8c7b69;
+}
+
+.recording-signal-r {
+  display: grid;
+  width: 30px;
+  height: 30px;
+  flex: 0 0 auto;
+  place-items: center;
+  border-radius: 50%;
+  background: #8c7b69;
+  color: #fff;
+  font-size: 15px;
+  font-weight: 800;
+}
+
+.recording-signal-indicator--recording .recording-signal-r {
+  background: #c0392b;
+  animation: recording-signal-flash 1s steps(2, start) infinite;
+}
+
+.recording-waveform {
+  width: 100%;
+  height: 36px;
+  overflow: visible;
+}
+
+.recording-waveform polyline {
+  fill: none;
+  stroke: #8c7b69;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.recording-signal-indicator--active .recording-waveform polyline {
+  stroke: #287044;
+}
+
+@keyframes recording-signal-flash {
+  50% {
+    opacity: 0.4;
+  }
+}
+
+.practice-recording-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  margin: 0 0 24px;
+  padding: 18px 20px;
+  border: 1px solid #d9cbb6;
+  border-radius: 12px;
+  background: #fffdfa;
+}
+
+.practice-recording-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+}
+
+.practice-recording-heading h3 {
+  margin: 0 0 5px;
+  font-size: 18px;
+}
+
+.practice-recording-heading p {
+  margin: 0;
+  color: #5e5146;
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+.practice-recording-heading .practice-recording-settings {
+  margin-top: 5px;
+  color: #8a4c24;
+  font-weight: 600;
+}
+
+.practice-recording-heading button {
+  flex: 0 0 auto;
+  padding: 10px 16px;
+  font-size: 15px;
+}
+
+.practice-recording-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.saved-recordings-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin: 0 0 24px;
+  padding: 18px 20px;
+  border: 1px solid #d9cbb6;
+  border-radius: 12px;
+  background: #f8f3eb;
+}
+
+.saved-recordings-panel h3 {
+  margin: 0 0 5px;
+  font-size: 18px;
+}
+
+.saved-recordings-panel > div > p,
+.saved-recordings-empty {
+  margin: 0;
+  color: #5e5146;
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+.saved-recordings-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.saved-recordings-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding-top: 10px;
+  border-top: 1px solid #e2d7c8;
+  color: #3d332b;
+  font-size: 14px;
+}
+
+.saved-recordings-list button {
+  flex: 0 0 auto;
+}
+
+.practice-recording-audio {
+  width: 100%;
+  max-width: 560px;
+}
+
+.practice-recording-error {
+  margin: 0;
+  color: #c0392b;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.dashboard-header {
+  margin-bottom: 28px;
+}
+
+.dashboard-header h1 {
+  margin: 4px 0 8px;
+  font-size: clamp(32px, 5vw, 48px);
+  font-weight: 500;
+}
+
+.dashboard-header > p:last-child {
+  margin: 0;
+  color: #5e5146;
+}
+
+.dashboard-recordings,
+.dashboard-player,
+.class-workspace {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  margin-bottom: 24px;
+  padding: 20px;
+  border: 1px solid #d9cbb6;
+  border-radius: 12px;
+  background: #fffdfa;
+}
+
+.dashboard-recordings h2,
+.dashboard-player h2,
+.class-workspace h2 {
+  margin: 0;
+  font-size: 20px;
+}
+
+.class-workspace > p {
+  margin: 0;
+  color: #5e5146;
+  line-height: 1.5;
+}
+
+.class-workspace h3 {
+  margin: 8px 0 0;
+  font-size: 17px;
+}
+
+.class-workspace-form {
+  display: grid;
+  gap: 14px;
+  max-width: 760px;
+}
+
+.class-workspace-form > label,
+.homework-completion-form > label:not(.homework-completed-toggle),
+.class-picker-label {
+  display: grid;
+  gap: 6px;
+  color: #5e5146;
+  font-size: 14px;
+}
+
+.class-workspace-form input:not([type="checkbox"]),
+.class-workspace-form select,
+.class-workspace-form textarea,
+.class-picker-label select,
+.homework-completion-form textarea {
+  width: 100%;
+  min-height: 40px;
+  padding: 8px 10px;
+  border: 1px solid #d9cbb6;
+  border-radius: 6px;
+  background: #fffdfa;
+  color: #1c1612;
+  font: inherit;
+}
+
+.class-student-picker {
+  display: grid;
+  gap: 8px;
+  max-height: 220px;
+  overflow: auto;
+  margin: 0;
+  padding: 12px;
+  border: 1px solid #d9cbb6;
+  border-radius: 8px;
+}
+
+.class-student-picker legend {
+  padding: 0 4px;
+  color: #5e5146;
+  font-weight: 600;
+}
+
+.class-student-picker label,
+.homework-completed-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #3d332b;
+  font-size: 14px;
+}
+
+.class-student-picker p {
+  margin: 0;
+  color: #7a6a58;
+}
+
+.class-picker-label {
+  max-width: 420px;
+}
+
+.music-class-list,
+.class-homework-card ul {
+  margin: 0;
+  padding-left: 20px;
+  color: #5e5146;
+}
+
+.music-class-list li + li,
+.class-homework-card li + li {
+  margin-top: 6px;
+}
+
+.class-homework-list {
+  display: grid;
+  gap: 12px;
+}
+
+.class-homework-card {
+  display: grid;
+  gap: 8px;
+  padding: 14px;
+  border: 1px solid #e2d7c8;
+  border-radius: 8px;
+  background: #fffdfa;
+}
+
+.class-homework-card h3,
+.class-homework-card h4 {
+  margin: 0;
+  color: #3d332b;
+  font-size: 17px;
+}
+
+.class-homework-card > p {
+  margin: 0;
+  color: #5e5146;
+  white-space: pre-line;
+}
+
+.class-homework-class,
+.class-homework-due {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.homework-completion-form {
+  display: grid;
+  gap: 10px;
+  max-width: 580px;
+  margin-top: 4px;
+}
+
+.homework-completion-form .practice-recording-error {
+  margin: 0;
+}
+
+.homework-completion-form button {
+  justify-self: start;
+}
+
+.class-action-message {
+  margin: 0 0 16px;
+  color: #286341;
+  font-size: 14px;
+}
+
+.dashboard-table-wrap {
+  overflow-x: auto;
+}
+
+.dashboard-table {
+  width: 100%;
+  border-collapse: collapse;
+  color: #3d332b;
+  font-size: 14px;
+  text-align: left;
+}
+
+.dashboard-table th,
+.dashboard-table td {
+  padding: 12px;
+  border-top: 1px solid #e2d7c8;
+  vertical-align: middle;
+}
+
+.dashboard-table th {
+  color: #7a6a58;
+  font-weight: 600;
+}
+
+.dashboard-recording-actions {
+  white-space: nowrap;
+}
+
+.dashboard-recording-actions button + button {
+  margin-left: 8px;
+}
+
+.dashboard-delete-button {
+  color: #a43f2a;
+}
+
+.dashboard-player .practice-recording-heading {
+  align-items: flex-start;
+}
+
+.recording-comments {
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+  border: 1px solid #e2d7c8;
+  border-radius: 10px;
+  background: #fffaf3;
+}
+
+.recording-comments h3 {
+  margin: 0;
+  font-size: 18px;
+}
+
+.recording-comments > div > p {
+  margin: 4px 0 0;
+  color: #5e5146;
+  font-size: 14px;
+}
+
+.recording-rating-form {
+  display: flex;
+  align-items: flex-end;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.recording-rating-form label {
+  display: grid;
+  gap: 5px;
+  color: #5e5146;
+  font-size: 14px;
+}
+
+.recording-rating-form input {
+  width: 130px;
+  min-height: 40px;
+  padding: 8px 10px;
+  border: 1px solid #d9cbb6;
+  border-radius: 6px;
+  background: #fffdfa;
+  color: #1c1612;
+  font: inherit;
+}
+
+.recording-rating-form > span,
+.recording-rating-display {
+  color: #5e5146;
+  font-size: 14px;
+}
+
+.recording-rating-display {
+  margin: 0;
+  font-weight: 600;
+}
+
+.recording-comment-list {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.recording-comment-list li {
+  padding: 12px;
+  border-left: 3px solid #c4552a;
+  border-radius: 4px;
+  background: #fffdfa;
+}
+
+.recording-comment-list li.recording-comment--selected {
+  border-left-width: 6px;
+  background: #ffe8c7;
+  box-shadow: 0 0 0 2px #c4552a, 0 4px 12px rgba(99, 53, 31, 0.18);
+}
+
+.recording-comment-list li:focus {
+  outline: 2px solid #9c3d1c;
+  outline-offset: 3px;
+}
+
+.recording-comment-meta {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 4px 12px;
+  color: #3d332b;
+  font-size: 13px;
+}
+
+.recording-comment-meta span {
+  color: #7a6a58;
+}
+
+.recording-comment-list li > p {
+  margin: 7px 0 0;
+  color: #3d332b;
+  line-height: 1.5;
+  white-space: pre-line;
+}
+
+.recording-comment-actions,
+.recording-comment-edit-form > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.recording-comment-actions button,
+.recording-comment-edit-form button {
+  min-height: 34px;
+}
+
+.recording-comment-delete {
+  color: #a43f2a;
+}
+
+.recording-comment-edit-form,
+.recording-comment-edit-form label {
+  display: grid;
+  gap: 8px;
+}
+
+.recording-comment-edit-form {
+  margin-top: 8px;
+}
+
+.recording-comment-edit-form label {
+  color: #5e5146;
+  font-size: 14px;
+}
+
+.recording-comment-edit-form textarea {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid #d9cbb6;
+  border-radius: 6px;
+  background: #fffdfa;
+  color: #1c1612;
+  font: inherit;
+}
+
+.recording-comment-marker {
+  display: inline-grid;
+  min-width: 28px;
+  min-height: 28px;
+  place-items: center;
+  padding: 2px;
+  border: 1px solid #d8a16c;
+  border-radius: 50%;
+  background: #fff3e8;
+  color: #63351f;
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  vertical-align: middle;
+}
+
+.recording-comment-marker:hover,
+.recording-comment-marker--active {
+  border-color: #9c3d1c;
+  background: #9c3d1c;
+  color: #fff;
+}
+
+.recording-comment-marker--active {
+  outline: 3px solid #ffd08a;
+  outline-offset: 2px;
+  box-shadow: 0 0 0 1px #63351f;
+  transform: scale(1.12);
+}
+
+.recording-comment-marker:focus-visible {
+  outline: 2px solid #9c3d1c;
+  outline-offset: 2px;
+}
+
+.recording-comment-markers {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.swar-comment-group {
+  display: inline;
+  white-space: normal;
+}
+
+.swar-comment-group .recording-comment-marker {
+  width: 20px;
+  min-width: 20px;
+  min-height: 20px;
+  margin: 0 2px;
+  font-size: 11px;
+}
+
+.recording-row-comment {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+  margin-left: 3px;
+  vertical-align: middle;
+}
+
+.recording-row-comment .recording-comment-marker {
+  width: 22px;
+  min-width: 22px;
+  min-height: 22px;
+  font-size: 12px;
+}
+
+.recording-comment-form {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(190px, 100%), 1fr));
+  align-items: end;
+  gap: 12px;
+}
+
+.recording-comment-form label {
+  display: grid;
+  gap: 6px;
+  color: #5e5146;
+  font-size: 14px;
+}
+
+.recording-comment-form select,
+.recording-comment-form textarea {
+  width: 100%;
+  min-height: 40px;
+  padding: 8px 10px;
+  border: 1px solid #d9cbb6;
+  border-radius: 6px;
+  background: #fffdfa;
+  color: #1c1612;
+  font: inherit;
+}
+
+.recording-comment-form .recording-comment-text {
+  grid-column: 1 / -1;
+}
+
+.recording-comment-form button {
+  justify-self: start;
+}
+
+.performance-report {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-top: 16px;
+  border-top: 1px solid #e2d7c8;
+}
+
+.performance-report h3 {
+  margin: 0;
+  font-size: 18px;
+}
+
+.performance-report-summary,
+.performance-report-note {
+  margin: 0;
+  color: #5e5146;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.performance-report-summary {
+  color: #3d332b;
+  font-weight: 600;
+}
+
+.performance-range-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 12px;
+}
+
+.performance-range-field {
+  display: grid;
+  gap: 5px;
+  min-width: min(220px, 100%);
+  color: #5e5146;
+  font-size: 13px;
+}
+
+.performance-range-field label {
+  color: inherit;
+  font: inherit;
+}
+
+.performance-range-controls select {
+  min-height: 40px;
+  padding: 8px 10px;
+  border: 1px solid #d9cbb6;
+  border-radius: 6px;
+  background: #fffdfa;
+  color: #1c1612;
+  font: inherit;
+}
+
+.performance-range-controls button {
+  min-height: 40px;
+}
+
+.performance-range-field .performance-table-select {
+  justify-self: start;
+}
+
+.performance-range-controls .performance-table-select--active {
+  border-color: #9c3d1c;
+  background: #9c3d1c;
+  color: #fff;
+}
+
+.performance-range-prompt {
+  margin: 0;
+  padding: 9px 12px;
+  border-left: 3px solid #c4552a;
+  border-radius: 4px;
+  background: #fff3e8;
+  color: #63351f;
+  font-size: 14px;
+}
+
 .beat-image-placeholder {
   display: flex;
   align-items: center;
@@ -802,9 +1694,95 @@ button:disabled {
   height: 16px;
 }
 
+.recording-source-controls {
+  display: flex;
+  flex: 1 1 400px;
+  align-items: flex-end;
+  gap: 10px;
+}
+
+.recording-source-controls .microphone-source-select {
+  flex: 1 1 260px;
+  min-width: 200px;
+}
+
+.record-practice-button {
+  display: inline-flex;
+  min-height: 42px;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  padding: 10px 20px;
+  border: 0;
+  border-radius: 8px;
+  background: #a84320;
+  color: #fff8ed;
+  font: 600 15px Georgia, "Times New Roman", serif;
+  white-space: nowrap;
+}
+
+.record-practice-button:hover:not(:disabled) {
+  background: #8e3518;
+}
+
+.record-practice-button--recording {
+  background: #872b24;
+}
+
+.record-practice-button:disabled {
+  cursor: wait;
+}
+
+.record-practice-indicator {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #f5c5b6;
+}
+
+.record-practice-button--recording .record-practice-indicator {
+  background: #fff;
+  animation: recording-signal-flash 1s steps(2, start) infinite;
+}
+
 .export-controls-row {
   display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 10px;
   justify-content: flex-end;
+}
+
+.microphone-source-select {
+  display: flex;
+  flex: 1 1 260px;
+  flex-direction: column;
+  gap: 6px;
+  max-width: 420px;
+  color: #5e5146;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.microphone-source-select select {
+  width: 100%;
+  min-height: 42px;
+  padding: 8px 12px;
+  border: 1px solid #d4c4b0;
+  border-radius: 8px;
+  background: #fff;
+  color: #2a1f14;
+  font: inherit;
+}
+
+.microphone-source-select select:disabled {
+  opacity: 0.65;
+}
+
+.microphone-source-error {
+  color: #a84320;
+  font-size: 12px;
+  font-weight: 400;
 }
 
 .export-video-modal-card {
@@ -1235,6 +2213,25 @@ td {
   line-height: 1.2;
 }
 
+.swar-range-selectable {
+  cursor: pointer;
+  border-radius: 4px;
+}
+
+.swar-range-selectable:hover {
+  background: #f3e5d6;
+}
+
+.swar-range-selectable:focus-visible {
+  outline: 2px solid #9c3d1c;
+  outline-offset: 2px;
+}
+
+.swar-range-boundary:not(.swar-active) {
+  box-shadow: inset 0 0 0 2px #c4552a;
+  border-radius: 4px;
+}
+
 .notes-per-beat-3 .swar {
   margin: 0 1px;
   font-size: 14px;
@@ -1285,6 +2282,35 @@ td {
   text-decoration: underline;
   text-decoration-thickness: 2px;
   text-underline-offset: 3px;
+}
+
+.performance-note-indicator {
+  display: inline-grid;
+  width: 1.15em;
+  height: 1.15em;
+  margin-left: 3px;
+  place-items: center;
+  border-radius: 50%;
+  font-size: 0.72em;
+  font-weight: 800;
+  line-height: 1;
+  vertical-align: super;
+  cursor: help;
+}
+
+.performance-note-indicator--correct {
+  color: #fff;
+  background: #287044;
+}
+
+.performance-note-indicator--incorrect {
+  color: #fff;
+  background: #a43f2a;
+}
+
+.performance-note-indicator--unverified {
+  color: #fff;
+  background: #a43f2a;
 }
 
 .lyrics-row td {
@@ -1514,6 +2540,26 @@ td {
     flex-wrap: wrap;
   }
 
+  .account-menu {
+    width: 100%;
+    justify-content: flex-end;
+    margin-left: 0;
+  }
+
+  .account-backdrop {
+    place-items: start center;
+    padding: 14px;
+  }
+
+  .account-dialog {
+    max-height: calc(100vh - 28px);
+    padding: 24px 18px;
+  }
+
+  .account-field-row {
+    grid-template-columns: 1fr;
+  }
+
   .carnatic-controls {
     padding: 16px;
     gap: 14px;
@@ -1537,6 +2583,61 @@ td {
     align-items: flex-start;
     flex-direction: column;
     gap: 8px;
+  }
+
+  .transport-controls {
+    flex-wrap: wrap;
+  }
+
+  .talam-recording-group {
+    gap: 6px;
+  }
+
+  .recording-source-controls {
+    flex-basis: 100%;
+    align-items: flex-end;
+    flex-direction: row;
+  }
+
+  .recording-source-controls .microphone-source-select {
+    min-width: 0;
+  }
+
+  .record-practice-button {
+    width: auto;
+    padding-right: 14px;
+    padding-left: 14px;
+  }
+
+  .recording-signal-indicator {
+    width: 82px;
+    height: 48px;
+    gap: 5px;
+    padding: 6px;
+  }
+
+  .recording-signal-r {
+    width: 24px;
+    height: 24px;
+    font-size: 13px;
+  }
+
+  .recording-waveform {
+    height: 30px;
+  }
+
+  .practice-recording-heading {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .practice-recording-actions {
+    justify-content: flex-start;
+  }
+
+  .saved-recordings-list li {
+    align-items: flex-start;
+    flex-direction: column;
   }
 
   .site-contact {

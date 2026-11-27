@@ -1,5 +1,8 @@
 from django.core.exceptions import ValidationError
 from django.db import models
+from django.db.models.functions import Lower
+from django.conf import settings
+from django.db.models import Q
 
 
 class Session(models.Model):
@@ -375,3 +378,194 @@ class Lesson(models.Model):
             "talamBeats": self.talam_beats,
             "noteDurationFixed": self.note_duration_fixed,
         }
+
+
+class PracticeRecording(models.Model):
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        related_name="practice_recordings",
+        null=True,
+        blank=True,
+        on_delete=models.CASCADE,
+    )
+    owner_key = models.UUIDField(null=True, blank=True)
+    exercise = models.ForeignKey(
+        Exercise,
+        related_name="practice_recordings",
+        on_delete=models.PROTECT,
+    )
+    exercise_title = models.CharField(max_length=120)
+    audio = models.FileField(upload_to="practice-recordings/%Y/%m/")
+    audio_content_type = models.CharField(max_length=100)
+    settings = models.JSONField()
+    listen_count = models.PositiveIntegerField(default=0)
+    teacher_rating = models.PositiveSmallIntegerField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at", "-id"]
+        indexes = [
+            models.Index(
+                fields=["owner_key", "exercise", "-created_at"],
+                name="lessons_pr_owner__037a03_idx",
+            ),
+            models.Index(
+                fields=["user", "exercise", "-created_at"],
+                name="lessons_pr_user_ex_9a8d1c_idx",
+            ),
+        ]
+
+
+class TeacherRecordingComment(models.Model):
+    class Scope(models.TextChoices):
+        TABLE = "table", "Table"
+        ROW = "row", "Row"
+        NOTE = "note", "Note"
+
+    recording = models.ForeignKey(
+        PracticeRecording,
+        related_name="teacher_comments",
+        on_delete=models.CASCADE,
+    )
+    teacher = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        related_name="recording_comments",
+        on_delete=models.PROTECT,
+    )
+    scope = models.CharField(max_length=8, choices=Scope.choices)
+    table_index = models.PositiveIntegerField()
+    row_index = models.PositiveIntegerField(null=True, blank=True)
+    note_index = models.PositiveIntegerField(null=True, blank=True)
+    comment = models.TextField()
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["table_index", "row_index", "note_index", "created_at", "id"]
+
+    def __str__(self):
+        return f"{self.recording_id}: {self.scope} comment by {self.teacher_id}"
+
+
+class UserProfile(models.Model):
+    class Role(models.TextChoices):
+        ADMIN = "admin", "Admin"
+        TEACHER = "teacher", "Teacher"
+        STUDENT = "student", "Student"
+
+    class LearningMode(models.TextChoices):
+        VOCAL = "vocal", "Vocal"
+        INSTRUMENT = "instrument", "Instrument"
+
+    user = models.OneToOneField(
+        settings.AUTH_USER_MODEL,
+        related_name="profile",
+        on_delete=models.CASCADE,
+    )
+    email = models.EmailField(null=True, blank=True)
+    role = models.CharField(max_length=10, choices=Role.choices, default=Role.STUDENT)
+    parent_name = models.CharField(max_length=150, blank=True, default="")
+    music_teacher_name = models.CharField(max_length=150, blank=True, default="")
+    contact_number = models.CharField(max_length=40, blank=True, default="")
+    address = models.TextField(blank=True, default="")
+    instrument_name = models.CharField(max_length=120, blank=True, default="")
+    default_shruthi = models.CharField(max_length=16, default="normal-G")
+    learning_mode = models.CharField(
+        max_length=12,
+        choices=LearningMode.choices,
+        blank=True,
+        default="",
+    )
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                Lower("email"),
+                condition=Q(email__isnull=False),
+                name="lessons_profile_email_ci_unique",
+            ),
+        ]
+        ordering = ["user__email", "user__id"]
+
+    def __str__(self):
+        return self.email or self.user.get_username()
+
+    def save(self, *args, **kwargs):
+        self.email = self.email.strip().lower() if self.email else None
+        if self.user_id and self.user.email != (self.email or ""):
+            self.user.email = self.email or ""
+            self.user.save(update_fields=["email"])
+        super().save(*args, **kwargs)
+
+
+class MusicClass(models.Model):
+    name = models.CharField(max_length=120)
+    teacher = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        related_name="teaching_music_classes",
+        on_delete=models.PROTECT,
+    )
+    students = models.ManyToManyField(
+        settings.AUTH_USER_MODEL,
+        related_name="music_classes",
+        blank=True,
+    )
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        related_name="created_music_classes",
+        on_delete=models.PROTECT,
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["name", "id"]
+
+    def __str__(self):
+        return self.name
+
+
+class ClassHomework(models.Model):
+    music_class = models.ForeignKey(
+        MusicClass,
+        related_name="homeworks",
+        on_delete=models.CASCADE,
+    )
+    title = models.CharField(max_length=120)
+    description = models.TextField(blank=True, default="")
+    due_date = models.DateField(null=True, blank=True)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        related_name="created_class_homeworks",
+        on_delete=models.PROTECT,
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["due_date", "-created_at", "id"]
+
+    def __str__(self):
+        return f"{self.music_class}: {self.title}"
+
+
+class HomeworkCompletion(models.Model):
+    homework = models.ForeignKey(
+        ClassHomework,
+        related_name="completions",
+        on_delete=models.CASCADE,
+    )
+    student = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        related_name="homework_completions",
+        on_delete=models.CASCADE,
+    )
+    completed_at = models.DateTimeField(null=True, blank=True)
+    note = models.TextField(blank=True, default="")
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["student__email", "student__id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["homework", "student"],
+                name="lessons_homework_student_unique",
+            ),
+        ]

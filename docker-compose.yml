@@ -16,13 +16,27 @@ services:
   backend:
     build: ./backend
     ports:
-      - "8001:8000"
+      - "${BACKEND_PORT:-8002}:8000"
     environment:
       DJANGO_DEBUG: ${DJANGO_DEBUG:-0}
       DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:-dev-only-change-me}
+      SESSION_COOKIE_SECURE: ${SESSION_COOKIE_SECURE:-0}
+      CSRF_COOKIE_SECURE: ${CSRF_COOKIE_SECURE:-0}
       DJANGO_ADMIN_USERNAME: ${DJANGO_ADMIN_USERNAME:-admin}
       DJANGO_ADMIN_PASSWORD: ${DJANGO_ADMIN_PASSWORD:-admin}
       DJANGO_ADMIN_EMAIL: ${DJANGO_ADMIN_EMAIL:-admin@example.com}
+      DJANGO_TEACHER_PASSWORD: ${DJANGO_TEACHER_PASSWORD:-teacher}
+      DJANGO_STUDENT_PASSWORD: ${DJANGO_STUDENT_PASSWORD:-student}
+      FRONTEND_BASE_URL: ${FRONTEND_BASE_URL:-http://localhost:5174}
+      CSRF_TRUSTED_ORIGINS: ${CSRF_TRUSTED_ORIGINS:-http://localhost:5174,http://127.0.0.1:5174}
+      EMAIL_BACKEND: ${EMAIL_BACKEND:-django.core.mail.backends.smtp.EmailBackend}
+      EMAIL_HOST: ${EMAIL_HOST:-}
+      EMAIL_PORT: ${EMAIL_PORT:-587}
+      EMAIL_HOST_USER: ${EMAIL_HOST_USER:-}
+      EMAIL_HOST_PASSWORD: ${EMAIL_HOST_PASSWORD:-}
+      EMAIL_USE_TLS: ${EMAIL_USE_TLS:-1}
+      EMAIL_USE_SSL: ${EMAIL_USE_SSL:-0}
+      DEFAULT_FROM_EMAIL: "${DEFAULT_FROM_EMAIL:-noreply@sunaadam.balamukundam.com}"
       POSTGRES_DB: ${POSTGRES_DB:-carnatic}
       POSTGRES_USER: ${POSTGRES_USER:-carnatic}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-carnatic}
@@ -33,6 +47,7 @@ services:
         condition: service_healthy
     volumes:
       - ./backend:/app
+      - practice_recordings:/app/media
 
   frontend:
     build: .
@@ -43,3 +58,4 @@ services:
 
 volumes:
   postgres_data:
+  practice_recordings:

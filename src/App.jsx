@@ -5,6 +5,7 @@ import { createScaleVideo } from "./exportVideo";
 import { noteLabel, NOTES } from "./notes";
 import { createScalePlayer } from "./player";
 import "./App.css";
+import AccountMenu from "./AccountMenu";
 
 const IDLE_FRAME = {
   activeIndex: -1,
@@ -89,6 +90,7 @@ export default function App() {
       <nav className="top-nav" aria-label="Main navigation">
         <a href="/shruthi">Shruthi box</a>
         <a href="/carnatic">Carnatic notes</a>
+        <AccountMenu />
       </nav>
       <header className="heading">
         <p className="eyebrow">MIDI</p>

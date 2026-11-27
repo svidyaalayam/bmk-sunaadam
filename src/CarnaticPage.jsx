@@ -20,6 +20,14 @@ import {
   selectLessonVideoEncoder,
 } from "./exportLessonVideo";
 import { ExportVideoModal } from "./ExportVideoModal";
+import {
+  analyzePracticeRecording,
+  chooseNoteSelectionCandidate,
+  getNoteRange,
+} from "./frequencyAnalysis";
+import AccountMenu from "./AccountMenu";
+import { apiFetch, useAuth } from "./auth";
+import { SHRUTHI_OPTIONS } from "./shruthiOptions";
 
 const FALLBACK_SESSIONS = [
   { id: "carnatic", name: "Carnatic", parentId: null, allowRagamChange: false },
@@ -55,29 +63,65 @@ const FALLBACK_EXERCISES = DEFAULT_EXERCISES.map((exercise, index) => ({
   swaraIntervals: FALLBACK_RAGAMS[0].swaraIntervals,
   noteDurationFixed: false,
 }));
+const COMMENT_MARKER = "💬";
 
-const SHRUTHI_OPTIONS = [
-  {
-    label: "Lower octave",
-    notes: ["G#", "A", "A#", "B"].map((note) => ({ label: note, value: `lower-${note}` })),
-  },
-  {
-    label: "Normal",
-    notes: ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"].map(
-      (note) => ({ label: note, value: `normal-${note}` }),
-    ),
-  },
-  {
-    label: "Higher octave",
-    notes: ["C", "C#", "D", "D#"].map((note) => ({ label: note, value: `higher-${note}` })),
-  },
-];
+async function getMicrophoneDevices() {
+  if (!navigator.mediaDevices?.enumerateDevices) {
+    throw new Error("Microphone selection is not supported in this browser.");
+  }
+  const devices = await navigator.mediaDevices.enumerateDevices();
+  return devices.filter((device) => device.kind === "audioinput");
+}
+
+function getRecordingOwnerKey() {
+  const storageKey = "carnatic_practice_recording_owner";
+  const existingKey = localStorage.getItem(storageKey);
+  if (existingKey && /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(existingKey)) {
+    return existingKey;
+  }
+  if (existingKey) localStorage.removeItem(storageKey);
+
+  if (!globalThis.crypto?.randomUUID) {
+    throw new Error("Secure browser storage is required to save recordings.");
+  }
+  const ownerKey = globalThis.crypto.randomUUID();
+  localStorage.setItem(storageKey, ownerKey);
+  return ownerKey;
+}
+
+async function getApiError(response) {
+  const body = await response.text();
+  try {
+    const data = JSON.parse(body);
+    if (typeof data.error === "string") return data.error;
+  } catch {
+    // Include a short response excerpt when the server does not return JSON.
+  }
+  return body.trim().slice(0, 240) || `HTTP ${response.status}`;
+}
+
+function getShruthiLabel(value) {
+  for (const group of SHRUTHI_OPTIONS) {
+    const note = group.notes.find((option) => option.value === value);
+    if (note) return `${group.label} ${note.label}`;
+  }
+  return value;
+}
+
+function formatPlaybackTimestamp(seconds) {
+  const minutes = Math.floor(seconds / 60);
+  const remainingSeconds = Math.floor(seconds % 60);
+  return `${minutes}:${String(remainingSeconds).padStart(2, "0")}`;
+}
 
 export default function CarnaticPage() {
+  const { user } = useAuth();
+  const dashboardMode = window.location.pathname === "/dash-board";
   const [sessions, setSessions] = useState(FALLBACK_SESSIONS);
   const [talams, setTalams] = useState(FALLBACK_TALAMS);
   const [ragams, setRagams] = useState(FALLBACK_RAGAMS);
   const [exercises, setExercises] = useState(FALLBACK_EXERCISES);
+  const [curriculumError, setCurriculumError] = useState("");
   const [selectedSessionId, setSelectedSessionId] = useState("sarali");
   const [selectedExerciseId, setSelectedExerciseId] = useState("fallback-0");
   const [selectedMelakartaId, setSelectedMelakartaId] = useState("fallback-29");
@@ -94,14 +138,90 @@ export default function CarnaticPage() {
   const [shruthiVolume, setShruthiVolume] = useState(14);
   const shruthiBoxRef = useRef(null);
 
+  useEffect(() => {
+    if (user?.defaultShruthi) setShruthi(user.defaultShruthi);
+  }, [user?.id, user?.defaultShruthi]);
+
   const [playbackState, setPlaybackState] = useState("stopped");
+  const [playbackSource, setPlaybackSource] = useState("instrument");
   const [countdown, setCountdown] = useState(null);
   const [playbackTime, setPlaybackTime] = useState(0);
   const playbackTimeRef = useRef(0);
+  const playbackRangeEndRef = useRef(null);
   const animationRef = useRef(null);
   const audioRef = useRef(null);
   const audioPositionRef = useRef(null);
   const bellPositionRef = useRef(null);
+  const [microphoneStarting, setMicrophoneStarting] = useState(false);
+  const [microphoneRecording, setMicrophoneRecording] = useState(false);
+  const [microphoneLevel, setMicrophoneLevel] = useState(0);
+  const [microphoneSignalDetected, setMicrophoneSignalDetected] = useState(false);
+  const [microphoneWaveform, setMicrophoneWaveform] = useState(() => Array(32).fill(0));
+  const [microphoneDevices, setMicrophoneDevices] = useState([]);
+  const [microphoneDeviceId, setMicrophoneDeviceId] = useState("default");
+  const [microphoneDeviceError, setMicrophoneDeviceError] = useState("");
+  const [recordingUrl, setRecordingUrl] = useState("");
+  const [recordingExerciseId, setRecordingExerciseId] = useState("");
+  const [recordingSettings, setRecordingSettings] = useState(null);
+  const [recordingBlob, setRecordingBlob] = useState(null);
+  const [recordingId, setRecordingId] = useState(null);
+  const [recordingComments, setRecordingComments] = useState([]);
+  const [recordingCommentsError, setRecordingCommentsError] = useState("");
+  const [selectedRecordingCommentId, setSelectedRecordingCommentId] = useState(null);
+  const [teacherRatingDraft, setTeacherRatingDraft] = useState("");
+  const [teacherRatingBusy, setTeacherRatingBusy] = useState(false);
+  const [editingRecordingCommentId, setEditingRecordingCommentId] = useState(null);
+  const [editingRecordingCommentText, setEditingRecordingCommentText] = useState("");
+  const [recordingCommentScope, setRecordingCommentScope] = useState("table");
+  const [recordingCommentTableIndex, setRecordingCommentTableIndex] = useState("0");
+  const [recordingCommentRowIndex, setRecordingCommentRowIndex] = useState("0");
+  const [recordingCommentNoteIndex, setRecordingCommentNoteIndex] = useState("0");
+  const [recordingCommentDraft, setRecordingCommentDraft] = useState("");
+  const [recordingCommentBusy, setRecordingCommentBusy] = useState(false);
+  const [commentNavigationRequest, setCommentNavigationRequest] = useState(0);
+  const [performanceReport, setPerformanceReport] = useState(null);
+  const [performanceAnalysisBusy, setPerformanceAnalysisBusy] = useState(false);
+  const [performanceAnalysisError, setPerformanceAnalysisError] = useState("");
+  const [rangeStartNoteIndex, setRangeStartNoteIndex] = useState("");
+  const [rangeEndNoteIndex, setRangeEndNoteIndex] = useState("");
+  const [noteSelectionTarget, setNoteSelectionTarget] = useState("");
+  const [recordingOwnerKey, setRecordingOwnerKey] = useState("");
+  const [recordingOwnerError, setRecordingOwnerError] = useState("");
+  const [savedRecordings, setSavedRecordings] = useState([]);
+  const [musicClassData, setMusicClassData] = useState({
+    classes: [],
+    teachers: [],
+    students: [],
+  });
+  const [selectedTeachingClassId, setSelectedTeachingClassId] = useState("");
+  const [teacherClassRecordings, setTeacherClassRecordings] = useState([]);
+  const [classHomeworks, setClassHomeworks] = useState([]);
+  const [classWorkspaceError, setClassWorkspaceError] = useState("");
+  const [classActionMessage, setClassActionMessage] = useState("");
+  const [classActionBusy, setClassActionBusy] = useState(false);
+  const [classForm, setClassForm] = useState({ name: "", teacherId: "", studentIds: [] });
+  const [homeworkForm, setHomeworkForm] = useState({
+    title: "",
+    description: "",
+    dueDate: "",
+  });
+  const [recordingSaveBusy, setRecordingSaveBusy] = useState(false);
+  const [loadingRecordingId, setLoadingRecordingId] = useState(null);
+  const [deletingRecordingId, setDeletingRecordingId] = useState(null);
+  const [recordingArchiveError, setRecordingArchiveError] = useState("");
+  const [recordingError, setRecordingError] = useState("");
+  const microphoneStreamRef = useRef(null);
+  const microphoneRecorderRef = useRef(null);
+  const microphoneChunksRef = useRef([]);
+  const microphoneAudioContextRef = useRef(null);
+  const microphoneAnalyserRef = useRef(null);
+  const microphoneSourceRef = useRef(null);
+  const microphoneSilentOutputRef = useRef(null);
+  const microphoneMeterFrameRef = useRef(null);
+  const recordingUrlRef = useRef("");
+  const recordedAudioRef = useRef(null);
+  const recordingUserIdRef = useRef(user?.id ?? null);
+  const startMicrophoneAfterCountdownRef = useRef(false);
 
   const [exportModalOpen, setExportModalOpen] = useState(false);
   const [exportPresetKey, setExportPresetKey] = useState(() => {
@@ -129,6 +249,59 @@ export default function CarnaticPage() {
   useEffect(() => () => {
     if (lessonVideoUrlRef.current) {
       URL.revokeObjectURL(lessonVideoUrlRef.current);
+    }
+    if (recordingUrlRef.current) URL.revokeObjectURL(recordingUrlRef.current);
+    const recorder = microphoneRecorderRef.current;
+    if (recorder && recorder.state !== "inactive") {
+      recorder.onstop = null;
+      recorder.stop();
+    }
+    stopMicrophoneMeter();
+    microphoneStreamRef.current?.getTracks().forEach((track) => track.stop());
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    const updateMicrophoneDevices = async () => {
+      try {
+        const audioInputs = await getMicrophoneDevices();
+        if (!active) return;
+        setMicrophoneDevices(audioInputs);
+        setMicrophoneDeviceError(
+          audioInputs.length ? "" : "No microphone devices were found. Check browser/device permissions.",
+        );
+        if (
+          microphoneDeviceId !== "default" &&
+          !audioInputs.some((device) => device.deviceId === microphoneDeviceId)
+        ) {
+          setMicrophoneDeviceId("default");
+        }
+      } catch (error) {
+        if (!active) return;
+        setMicrophoneDeviceError(
+          error instanceof Error
+            ? `Could not list microphone sources: ${error.message}`
+            : "Could not list microphone sources.",
+        );
+      }
+    };
+
+    updateMicrophoneDevices();
+    navigator.mediaDevices?.addEventListener?.("devicechange", updateMicrophoneDevices);
+    return () => {
+      active = false;
+      navigator.mediaDevices?.removeEventListener?.("devicechange", updateMicrophoneDevices);
+    };
+  }, [microphoneDeviceId]);
+
+  useEffect(() => {
+    try {
+      setRecordingOwnerKey(getRecordingOwnerKey());
+      setRecordingOwnerError("");
+    } catch (error) {
+      setRecordingOwnerError(
+        error instanceof Error ? error.message : "Could not initialize recording storage.",
+      );
     }
   }, []);
 
@@ -226,22 +399,50 @@ export default function CarnaticPage() {
   }
 
   useEffect(() => {
-    fetch("/api/curriculum/")
-      .then((response) => {
-        if (!response.ok) throw new Error("Could not load curriculum.");
-        return response.json();
-      })
-      .then((data) => {
-        if (!data.sessions?.length || !data.exercises?.length) throw new Error("Curriculum is empty.");
+    const controller = new AbortController();
+    const loadCurriculum = async () => {
+      try {
+        const response = await fetch("/api/curriculum/", { signal: controller.signal });
+        if (!response.ok) {
+          const detail = (await response.text()).trim();
+          throw new Error(
+            `GET /api/curriculum/ returned HTTP ${response.status}${detail ? `: ${detail.slice(0, 240)}` : "."}`,
+          );
+        }
+
+        const data = await response.json();
+        if (
+          !Array.isArray(data.sessions) ||
+          !Array.isArray(data.talams) ||
+          !Array.isArray(data.ragams) ||
+          !Array.isArray(data.exercises)
+        ) {
+          throw new Error("The curriculum API response is missing expected list fields.");
+        }
+        if (!data.sessions.length || !data.exercises.length) {
+          throw new Error(
+            "The backend returned an empty curriculum. Check that the database is populated and seed_lessons completed.",
+          );
+        }
+
         setSessions(data.sessions);
         setTalams(data.talams);
-        setRagams(data.ragams || []);
+        setRagams(data.ragams);
         setExercises(data.exercises);
         setSelectedSessionId(String(data.exercises[0].sessionId));
         setSelectedExerciseId(String(data.exercises[0].id));
         setSelectedMelakartaId(String(data.exercises[0].ragamId || ""));
-      })
-      .catch(() => {});
+        setCurriculumError("");
+      } catch (error) {
+        if (error instanceof Error && error.name === "AbortError") return;
+        setCurriculumError(
+          error instanceof Error ? error.message : "Could not load curriculum from the backend API.",
+        );
+      }
+    };
+
+    loadCurriculum();
+    return () => controller.abort();
   }, []);
 
   const sessionExercises = exercises.filter(
@@ -251,6 +452,173 @@ export default function CarnaticPage() {
     exercises.find((exercise) => String(exercise.id) === String(selectedExerciseId)) ||
     sessionExercises[0] ||
     null;
+
+  async function refreshClassWorkspace(signal) {
+    const requests = [apiFetch("/api/music-classes/", { signal })];
+    if (user?.role === "teacher" || user?.role === "student") {
+      requests.push(apiFetch("/api/homeworks/", { signal }));
+    }
+    const [classResult, homeworkResult] = await Promise.all(requests);
+    if (!Array.isArray(classResult.classes)) {
+      throw new Error("The music classes API returned an invalid response.");
+    }
+    setMusicClassData({
+      classes: classResult.classes,
+      teachers: classResult.teachers || [],
+      students: classResult.students || [],
+    });
+    setClassHomeworks(homeworkResult?.homeworks || []);
+    setSelectedTeachingClassId((current) => (
+      classResult.classes.some((item) => String(item.id) === String(current))
+        ? current
+        : String(classResult.classes[0]?.id || "")
+    ));
+    setClassWorkspaceError("");
+  }
+
+  useEffect(() => {
+    if (!dashboardMode || !user) {
+      setMusicClassData({ classes: [], teachers: [], students: [] });
+      setClassHomeworks([]);
+      return undefined;
+    }
+    const controller = new AbortController();
+    refreshClassWorkspace(controller.signal).catch((error) => {
+      if (error instanceof Error && error.name === "AbortError") return;
+      setClassWorkspaceError(
+        error instanceof Error ? error.message : "Could not load music classes and homework.",
+      );
+    });
+    return () => controller.abort();
+  }, [dashboardMode, user?.id, user?.role]);
+
+  useEffect(() => {
+    if (selectedRecordingCommentId === null || !commentNavigationRequest) return;
+    const target = document.getElementById(
+      `recording-comment-${selectedRecordingCommentId}`,
+    );
+    if (!target) return;
+    target.scrollIntoView({ behavior: "smooth", block: "center", inline: "nearest" });
+    target.focus({ preventScroll: true });
+  }, [commentNavigationRequest, selectedRecordingCommentId, recordingComments]);
+
+  useEffect(() => {
+    if (
+      !dashboardMode ||
+      user?.role !== "teacher" ||
+      !selectedTeachingClassId
+    ) {
+      setTeacherClassRecordings([]);
+      return undefined;
+    }
+    const controller = new AbortController();
+    apiFetch(`/api/recordings/?class_id=${encodeURIComponent(selectedTeachingClassId)}`, {
+      signal: controller.signal,
+    })
+      .then((data) => {
+        if (!Array.isArray(data.recordings)) {
+          throw new Error("The class recordings API returned an invalid response.");
+        }
+        setTeacherClassRecordings(data.recordings);
+      })
+      .catch((error) => {
+        if (error instanceof Error && error.name === "AbortError") return;
+        setClassWorkspaceError(
+          error instanceof Error ? error.message : "Could not load student recordings.",
+        );
+      });
+    return () => controller.abort();
+  }, [dashboardMode, selectedTeachingClassId, user?.id, user?.role]);
+  useEffect(() => {
+    const exerciseId = String(currentExercise?.id || "");
+    if (dashboardMode || !user || !recordingOwnerKey || !/^\d+$/.test(exerciseId)) {
+      setSavedRecordings([]);
+      setRecordingArchiveError("");
+      return undefined;
+    }
+
+    const controller = new AbortController();
+    const loadSavedRecordings = async () => {
+      try {
+        await apiFetch("/api/recordings/claim/", {
+          method: "POST",
+          headers: { "X-Recording-Owner": recordingOwnerKey },
+          body: "{}",
+          signal: controller.signal,
+        });
+        const data = await apiFetch(
+          `/api/recordings/?exercise_id=${encodeURIComponent(exerciseId)}`,
+          {
+            headers: { "X-Recording-Owner": recordingOwnerKey },
+            signal: controller.signal,
+          },
+        );
+        if (!Array.isArray(data.recordings)) {
+          throw new Error("The recordings API returned an invalid response.");
+        }
+        setSavedRecordings(data.recordings);
+        setRecordingArchiveError("");
+      } catch (error) {
+        if (error instanceof Error && error.name === "AbortError") return;
+        setRecordingArchiveError(
+          error instanceof Error ? error.message : "Could not load saved recordings.",
+        );
+      }
+    };
+
+    loadSavedRecordings();
+    return () => controller.abort();
+  }, [currentExercise?.id, dashboardMode, recordingOwnerKey, user?.id]);
+
+  useEffect(() => {
+    if (!dashboardMode || !user || !recordingOwnerKey) {
+      if (dashboardMode) setSavedRecordings([]);
+      return undefined;
+    }
+
+    const controller = new AbortController();
+    const loadDashboardRecordings = async () => {
+      try {
+        await apiFetch("/api/recordings/claim/", {
+          method: "POST",
+          headers: { "X-Recording-Owner": recordingOwnerKey },
+          body: "{}",
+          signal: controller.signal,
+        });
+        const data = await apiFetch("/api/recordings/", { signal: controller.signal });
+        if (!Array.isArray(data.recordings)) {
+          throw new Error("The recordings API returned an invalid response.");
+        }
+        setSavedRecordings(data.recordings);
+        setRecordingArchiveError("");
+      } catch (error) {
+        if (error instanceof Error && error.name === "AbortError") return;
+        setRecordingArchiveError(
+          error instanceof Error ? error.message : "Could not load your practice dashboard.",
+        );
+      }
+    };
+
+    loadDashboardRecordings();
+    return () => controller.abort();
+  }, [dashboardMode, recordingOwnerKey, user?.id]);
+
+  useEffect(() => {
+    const nextUserId = user?.id ?? null;
+    if (recordingUserIdRef.current === nextUserId) return;
+    recordingUserIdRef.current = nextUserId;
+    if (recordingId === null) return;
+
+    stopPlayback();
+    if (recordingUrlRef.current) URL.revokeObjectURL(recordingUrlRef.current);
+    recordingUrlRef.current = "";
+    setRecordingUrl("");
+    setRecordingBlob(null);
+    setRecordingId(null);
+    setRecordingComments([]);
+    setRecordingExerciseId("");
+    setRecordingSettings(null);
+  }, [user?.id]);
   const currentTalam = talams.find(
     (talam) => String(talam.id) === String(currentExercise?.talamId),
   );
@@ -318,58 +686,112 @@ export default function CarnaticPage() {
     currentExercise?.Complete_Talam_withEmptyNotes ??
     currentExercise?.complete_talam_with_empty_notes ??
     false;
-  const playbackSchedule = buildTableSchedule(
-    exerciseSections,
-    selectedBeats,
-    visibleTables,
-    bpm,
-    playbackSequence,
-    cyclesPerRow,
-    true,
-    repeatToCompleteTalam,
-    completeTalamWithEmptyNotes,
-    excludedPartKeys,
-  );
-  const displaySchedule = buildTableSchedule(
-    exerciseSections,
-    selectedBeats,
-    visibleTables,
-    bpm,
-    playbackSequence,
-    cyclesPerRow,
-    false,
-    repeatToCompleteTalam,
-    completeTalamWithEmptyNotes,
-    excludedPartKeys,
-  );
-  const totalDuration = playbackSchedule.reduce((total, table) => total + table.duration, 0);
+  const isRecordingReplay = playbackSource === "recording" && recordingSettings;
+  const activePlaybackBpm =
+    isRecordingReplay ? recordingSettings.bpm : bpm;
+  const activePlaybackShruthi =
+    isRecordingReplay ? recordingSettings.shruthi : shruthi;
+  const activePlaybackInstrument =
+    isRecordingReplay ? recordingSettings.instrument : instrument;
+  const activeNoteVolume =
+    isRecordingReplay ? recordingSettings.noteVolume : noteVolume;
+  const activePlaybackBeats =
+    isRecordingReplay ? recordingSettings.beats : selectedBeats;
+  const activeTalamName =
+    isRecordingReplay ? recordingSettings.exerciseSnapshot.talamName : currentTalam?.name;
+  const activeCyclesPerRow =
+    isRecordingReplay ? recordingSettings.cyclesPerRow : cyclesPerRow;
+  const activeBeatGroups =
+    isRecordingReplay ? recordingSettings.beatGroups : beatGroups;
+  const activeBeatNumbers =
+    isRecordingReplay ? recordingSettings.beatNumbers : currentTalam?.beatNumbers || [];
+  const activeSwaraIntervals =
+    isRecordingReplay ? recordingSettings.swaraIntervals : swaraIntervals;
+  const activeExercise =
+    isRecordingReplay && recordingSettings.exerciseSnapshot
+      ? recordingSettings.exerciseSnapshot
+      : currentExercise;
+  const activeExerciseSections =
+    isRecordingReplay && recordingSettings.exerciseSections
+      ? recordingSettings.exerciseSections
+      : exerciseSections;
+  const playbackSchedule = isRecordingReplay
+    ? recordingSettings.playbackSchedule
+    : buildTableSchedule(
+      exerciseSections,
+      selectedBeats,
+      visibleTables,
+      activePlaybackBpm,
+      playbackSequence,
+      cyclesPerRow,
+      true,
+      repeatToCompleteTalam,
+      completeTalamWithEmptyNotes,
+      excludedPartKeys,
+    );
+  const displaySchedule = isRecordingReplay
+    ? recordingSettings.displaySchedule
+    : buildTableSchedule(
+      exerciseSections,
+      selectedBeats,
+      visibleTables,
+      activePlaybackBpm,
+      playbackSequence,
+      cyclesPerRow,
+      false,
+      repeatToCompleteTalam,
+      completeTalamWithEmptyNotes,
+      excludedPartKeys,
+    );
+  const totalDuration = isRecordingReplay
+    ? recordingSettings.totalDuration
+    : playbackSchedule.reduce((total, table) => total + table.duration, 0);
 
   useEffect(() => {
     if (playbackState !== "counting" || countdown === null) return undefined;
 
     const timer = window.setTimeout(() => {
-      if (countdown === "Go") {
-        setCountdown(null);
-        setPlaybackState("playing");
+      if (countdown === 1) {
+        if (startMicrophoneAfterCountdownRef.current) {
+          startMicrophoneAfterCountdownRef.current = false;
+          beginMicrophoneCapture();
+        } else {
+          setCountdown(null);
+          setPlaybackState("playing");
+        }
       } else {
-        audioRef.current?.playBell(shruthi);
-        setCountdown(countdown === 3 ? 2 : countdown === 2 ? 1 : "Go");
+        audioRef.current?.playBell(activePlaybackShruthi);
+        setCountdown(countdown === 3 ? 2 : 1);
       }
-    }, 60000 / bpm);
+    }, 60000 / activePlaybackBpm);
 
     return () => window.clearTimeout(timer);
-  }, [playbackState, countdown, bpm, shruthi]);
+  }, [playbackState, countdown, activePlaybackBpm, activePlaybackShruthi]);
 
   useEffect(() => {
     if (playbackState !== "playing") return undefined;
 
     let previous = performance.now();
     const tick = (now) => {
-      const nextTime = playbackTimeRef.current + (now - previous) / 1000;
+      const recordedAudio = playbackSource === "recording" ? recordedAudioRef.current : null;
+      const nextTime = recordedAudio
+        ? recordedAudio.currentTime
+        : playbackTimeRef.current + (now - previous) / 1000;
+      const recordingEnded = Boolean(recordedAudio?.ended);
+      const rangeEnded = recordedAudio
+        && playbackRangeEndRef.current !== null
+        && nextTime >= playbackRangeEndRef.current;
       previous = now;
-      if (nextTime >= totalDuration) {
-        if (playInLoop && totalDuration > 0) {
-          const loopedTime = nextTime % totalDuration;
+      if ((!recordedAudio && nextTime >= totalDuration) || recordingEnded || rangeEnded) {
+        if (!rangeEnded && playInLoop && totalDuration > 0) {
+          if (recordedAudio) {
+            recordedAudio.currentTime = 0;
+            recordedAudio.play().catch(() => {
+              setRecordingError("The recording could not be restarted for repeat playback.");
+              setPlaybackState("stopped");
+            });
+          }
+          const loopedTime = recordingEnded ? 0 : nextTime % totalDuration;
           playbackTimeRef.current = loopedTime;
           setPlaybackTime(loopedTime);
           audioPositionRef.current = null;
@@ -377,6 +799,7 @@ export default function CarnaticPage() {
           animationRef.current = requestAnimationFrame(tick);
           return;
         }
+        playbackRangeEndRef.current = null;
         playbackTimeRef.current = 0;
         setPlaybackTime(0);
         setPlaybackState("stopped");
@@ -393,7 +816,49 @@ export default function CarnaticPage() {
       if (animationRef.current !== null) cancelAnimationFrame(animationRef.current);
       animationRef.current = null;
     };
-  }, [playbackState, totalDuration, playInLoop]);
+  }, [playbackState, totalDuration, playInLoop, playbackSource]);
+
+  useEffect(() => {
+    const recorder = microphoneRecorderRef.current;
+    if (recorder?.state === "recording" && playbackState === "paused") {
+      recorder.pause();
+    } else if (recorder?.state === "paused" && playbackState === "playing") {
+      recorder.resume();
+    } else if (recorder && recorder.state !== "inactive" && playbackState === "stopped") {
+      recorder.stop();
+    }
+  }, [playbackState]);
+
+  useEffect(() => {
+    const audio = recordedAudioRef.current;
+    if (!audio || playbackSource !== "recording") return;
+    if (playbackState === "playing") {
+      audio.play().catch((error) => {
+        setRecordingError(
+          error instanceof Error ? `Could not play the recording: ${error.message}` : "Could not play the recording.",
+        );
+        playbackTimeRef.current = 0;
+        setPlaybackTime(0);
+        setPlaybackState("stopped");
+        setPlaybackSource("instrument");
+      });
+    } else {
+      audio.pause();
+    }
+  }, [playbackState, playbackSource, recordingUrl]);
+
+  useEffect(() => {
+    if (dashboardMode || !recordingExerciseId || recordingExerciseId === String(currentExercise?.id || "")) return;
+    if (recordingUrlRef.current) URL.revokeObjectURL(recordingUrlRef.current);
+    recordingUrlRef.current = "";
+    setRecordingUrl("");
+    setRecordingBlob(null);
+    setRecordingId(null);
+    setRecordingComments([]);
+    setRecordingExerciseId("");
+    setRecordingSettings(null);
+    setRecordingError("");
+  }, [currentExercise?.id, dashboardMode, recordingExerciseId]);
 
   useEffect(() => {
     if (playbackState !== "playing" && playbackState !== "counting") {
@@ -406,10 +871,10 @@ export default function CarnaticPage() {
 
     const position = getPlaybackNotePosition(
       playbackSchedule,
-      currentTalam?.beatNumbers || [],
-      beatGroups,
+      activeBeatNumbers,
+      activeBeatGroups,
       playbackTime,
-      bpm,
+      activePlaybackBpm,
     );
     if (!position || !audioRef.current) return;
 
@@ -419,38 +884,39 @@ export default function CarnaticPage() {
       bellPositionRef.current !== position.beatKey
     ) {
       bellPositionRef.current = position.beatKey;
-      audioRef.current.playBell(shruthi);
+      audioRef.current.playBell(activePlaybackShruthi);
     }
 
     if (position.isContinuation) return;
 
-    const positionKey = `${position.tableIndex}-${position.noteIndex}-${shruthi}`;
+    const positionKey = `${position.tableIndex}-${position.noteIndex}-${activePlaybackShruthi}`;
     if (audioPositionRef.current === positionKey) return;
     audioPositionRef.current = positionKey;
-    const volume = 0.18 * (noteVolume / 100);
+    const volume = 0.18 * (activeNoteVolume / 100);
     audioRef.current.playNote(
       position.note,
-      shruthi,
+      activePlaybackShruthi,
       volume,
-      swaraIntervals,
-      instrument,
+      activeSwaraIntervals,
+      activePlaybackInstrument,
       position.duration,
       0,
     );
   }, [
     playbackState,
+    playbackSource,
     playbackTime,
     notes,
     playbackSchedule,
     selectedBeats,
-    currentTalam?.beatNumbers,
-    beatGroups,
+    activeBeatNumbers,
+    activeBeatGroups,
     visibleTables,
-    bpm,
-    shruthi,
-    swaraIntervals,
-    instrument,
-    noteVolume,
+    activePlaybackBpm,
+    activePlaybackShruthi,
+    activeSwaraIntervals,
+    activePlaybackInstrument,
+    activeNoteVolume,
   ]);
 
   async function playPlayback() {
@@ -460,18 +926,783 @@ export default function CarnaticPage() {
       setPlaybackState("playing");
       return;
     }
-
-    const startAudioAndCountdown = () => {
-      audioRef.current?.playBell(shruthi);
-      setCountdown(3);
-      setPlaybackState("counting");
-    };
+    setPlaybackSource("instrument");
 
     startAudioAndCountdown();
   }
 
+  function startAudioAndCountdown(settings = { bpm, shruthi }) {
+    startMicrophoneAfterCountdownRef.current = false;
+    audioRef.current?.playBell(settings.shruthi);
+    setCountdown(3);
+    setPlaybackState("counting");
+  }
+
+  async function startMicrophoneRecording() {
+    if (!currentExercise || playbackState !== "stopped") return;
+    const exerciseId = String(currentExercise.id);
+    const capturePlaybackSchedule = buildTableSchedule(
+      exerciseSections,
+      selectedBeats,
+      visibleTables,
+      bpm,
+      playbackSequence,
+      cyclesPerRow,
+      true,
+      repeatToCompleteTalam,
+      completeTalamWithEmptyNotes,
+      excludedPartKeys,
+    );
+    const captureDisplaySchedule = buildTableSchedule(
+      exerciseSections,
+      selectedBeats,
+      visibleTables,
+      bpm,
+      playbackSequence,
+      cyclesPerRow,
+      false,
+      repeatToCompleteTalam,
+      completeTalamWithEmptyNotes,
+      excludedPartKeys,
+    );
+    const captureSettings = {
+      bpm,
+      shruthi,
+      shruthiDrone,
+      shruthiVolume,
+      instrument,
+      noteVolume,
+      excludedPartKeys: [...excludedPartKeys],
+      playbackSchedule: capturePlaybackSchedule,
+      displaySchedule: captureDisplaySchedule,
+      totalDuration: capturePlaybackSchedule.reduce((total, table) => total + table.duration, 0),
+      exerciseTitle: currentExercise.title,
+      ragamName: currentExercise.ragamName,
+      beats: selectedBeats,
+      cyclesPerRow,
+      beatGroups: [...beatGroups],
+      beatNumbers: [...(currentTalam?.beatNumbers || [])],
+      swaraIntervals,
+      exerciseSnapshot: {
+        title: currentExercise.title,
+        notes: currentExercise.notes,
+        lyrics: currentExercise.lyrics,
+        talamName: currentTalam?.name || currentExercise.talamName,
+        ragamName: currentExercise.ragamName,
+        repeatToCompleteTalam,
+        completeTalamWithEmptyNotes,
+      },
+      exerciseSections: exerciseSections.map((section) => ({
+        ...section,
+        notes: [...section.notes],
+        lyrics: [...section.lyrics],
+      })),
+    };
+    if (captureSettings.totalDuration <= 0) return;
+    setMicrophoneStarting(true);
+    setRecordingError("");
+    try {
+      if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") {
+        throw new Error("Microphone recording is not supported in this browser.");
+      }
+
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          ...(microphoneDeviceId !== "default" && {
+            deviceId: { exact: microphoneDeviceId },
+          }),
+          echoCancellation: false,
+          noiseSuppression: false,
+          autoGainControl: false,
+        },
+      });
+      microphoneStreamRef.current = stream;
+      const microphoneTracks = stream.getAudioTracks();
+      if (!microphoneTracks.some((track) => track.enabled && track.readyState === "live")) {
+        throw new Error("No active microphone audio track was provided by the browser.");
+      }
+      try {
+        setMicrophoneDevices(await getMicrophoneDevices());
+        setMicrophoneDeviceError("");
+      } catch (error) {
+        setMicrophoneDeviceError(
+          error instanceof Error ? error.message : "Could not refresh microphone sources.",
+        );
+      }
+      setMicrophoneLevel(0);
+      setMicrophoneSignalDetected(false);
+      setMicrophoneWaveform(Array(32).fill(0));
+      setRecordingError("");
+      setPerformanceReport(null);
+      setPerformanceAnalysisError("");
+      try {
+        startMicrophoneMeter(stream);
+      } catch (error) {
+        stopMicrophoneMeter();
+        setRecordingError(
+          error instanceof Error
+            ? `Microphone recording can continue, but the live signal meter is unavailable: ${error.message}`
+            : "Microphone recording can continue, but the live signal meter is unavailable.",
+        );
+      }
+      const supportedTypes = [
+        "audio/webm;codecs=opus",
+        "audio/mp4",
+        "audio/ogg;codecs=opus",
+      ];
+      const mimeType = supportedTypes.find((type) => MediaRecorder.isTypeSupported(type));
+      const recorder = mimeType
+        ? new MediaRecorder(stream, { mimeType })
+        : new MediaRecorder(stream);
+      recorder.ondataavailable = (event) => {
+        if (event.data.size > 0) microphoneChunksRef.current.push(event.data);
+      };
+      recorder.onerror = (event) => {
+        setRecordingError(
+          event.error instanceof Error
+            ? `Microphone recording failed: ${event.error.message}`
+            : "Microphone recording failed.",
+        );
+        stopPlayback();
+      };
+      recorder.onstop = () => {
+        const blob = new Blob(microphoneChunksRef.current, {
+          type: recorder.mimeType || "audio/webm",
+        });
+        microphoneStreamRef.current?.getTracks().forEach((track) => track.stop());
+        microphoneStreamRef.current = null;
+        microphoneRecorderRef.current = null;
+        stopMicrophoneMeter();
+        setMicrophoneRecording(false);
+        setMicrophoneLevel(0);
+        setMicrophoneSignalDetected(false);
+        setMicrophoneWaveform(Array(32).fill(0));
+        if (blob.size > 0) {
+          if (recordingUrlRef.current) URL.revokeObjectURL(recordingUrlRef.current);
+          const url = URL.createObjectURL(blob);
+          recordingUrlRef.current = url;
+          setRecordingBlob(blob);
+          setRecordingId(null);
+          setPerformanceReport(null);
+          setRecordingExerciseId(exerciseId);
+          setRecordingSettings(captureSettings);
+          setRecordingUrl(url);
+        } else {
+          setRecordingBlob(null);
+          setRecordingId(null);
+          setRecordingSettings(null);
+          setRecordingError("No microphone audio was captured. Check microphone access and try again.");
+        }
+      };
+      microphoneRecorderRef.current = recorder;
+      microphoneChunksRef.current = [];
+      setMicrophoneRecording(false);
+      if (recordingUrlRef.current) {
+        URL.revokeObjectURL(recordingUrlRef.current);
+        recordingUrlRef.current = "";
+      }
+      setRecordingUrl("");
+      setRecordingBlob(null);
+      setRecordingId(null);
+      setRecordingExerciseId(exerciseId);
+      setRecordingSettings(captureSettings);
+      setPlaybackTime(0);
+      playbackTimeRef.current = 0;
+      audioRef.current?.resume?.();
+      setPlaybackSource("instrument");
+      startMicrophoneAfterCountdownRef.current = true;
+      setCountdown(3);
+      setPlaybackState("counting");
+    } catch (error) {
+      microphoneStreamRef.current?.getTracks().forEach((track) => track.stop());
+      microphoneStreamRef.current = null;
+      microphoneRecorderRef.current = null;
+      setMicrophoneStarting(false);
+      setMicrophoneRecording(false);
+      startMicrophoneAfterCountdownRef.current = false;
+      stopMicrophoneMeter();
+      setRecordingError(
+        error instanceof Error ? error.message : "Could not access the microphone.",
+      );
+    }
+  }
+
+  function beginMicrophoneCapture() {
+    startMicrophoneAfterCountdownRef.current = false;
+    const recorder = microphoneRecorderRef.current;
+    if (!recorder) {
+      setMicrophoneStarting(false);
+      setCountdown(null);
+      setRecordingError("The microphone recorder is not ready. Please try again.");
+      setPlaybackState("stopped");
+      return;
+    }
+
+    try {
+      microphoneChunksRef.current = [];
+      recorder.start(250);
+      setMicrophoneRecording(true);
+      setMicrophoneStarting(false);
+      setCountdown(null);
+      setPlaybackState("playing");
+    } catch (error) {
+      microphoneStreamRef.current?.getTracks().forEach((track) => track.stop());
+      microphoneStreamRef.current = null;
+      microphoneRecorderRef.current = null;
+      stopMicrophoneMeter();
+      setMicrophoneRecording(false);
+      setMicrophoneStarting(false);
+      setMicrophoneLevel(0);
+      setMicrophoneSignalDetected(false);
+      setCountdown(null);
+      setRecordingError(
+        error instanceof Error
+          ? `Microphone recording failed to start: ${error.message}`
+          : "Microphone recording failed to start.",
+      );
+      setPlaybackState("stopped");
+    }
+  }
+
+  function startMicrophoneMeter(stream) {
+    const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+    if (!AudioContextClass) throw new Error("Web Audio is not supported.");
+    const context = new AudioContextClass();
+    const analyser = context.createAnalyser();
+    analyser.fftSize = 1024;
+    const silentOutput = context.createGain();
+    silentOutput.gain.value = 0;
+    microphoneAudioContextRef.current = context;
+    microphoneAnalyserRef.current = analyser;
+    const source = context.createMediaStreamSource(stream);
+    source.connect(analyser);
+    analyser.connect(silentOutput);
+    silentOutput.connect(context.destination);
+    microphoneSourceRef.current = source;
+    microphoneSilentOutputRef.current = silentOutput;
+
+    const samples = new Uint8Array(analyser.fftSize);
+    let lastUpdate = 0;
+    const measure = (now) => {
+      analyser.getByteTimeDomainData(samples);
+      let sumSquares = 0;
+      for (const sample of samples) {
+        const amplitude = (sample - 128) / 128;
+        sumSquares += amplitude * amplitude;
+      }
+      const rms = Math.sqrt(sumSquares / samples.length);
+      if (now - lastUpdate >= 50) {
+        setMicrophoneLevel(Math.min(1, rms * 3));
+        setMicrophoneSignalDetected(rms >= 0.008);
+        const waveform = [];
+        const samplesPerPoint = Math.floor(samples.length / 32);
+        for (let point = 0; point < 32; point += 1) {
+          const sampleIndex = Math.min(point * samplesPerPoint, samples.length - 1);
+          waveform.push((samples[sampleIndex] - 128) / 128);
+        }
+        setMicrophoneWaveform(waveform);
+        lastUpdate = now;
+      }
+      microphoneMeterFrameRef.current = requestAnimationFrame(measure);
+    };
+
+    context.resume().then(() => {
+      if (microphoneAudioContextRef.current !== context) return;
+      microphoneMeterFrameRef.current = requestAnimationFrame(measure);
+    }).catch((error) => {
+      if (microphoneAudioContextRef.current !== context) return;
+      stopMicrophoneMeter();
+      setRecordingError(
+        error instanceof Error
+          ? `Microphone recording can continue, but the live signal meter could not start: ${error.message}`
+          : "Microphone recording can continue, but the live signal meter could not start.",
+      );
+    });
+  }
+
+  function stopMicrophoneMeter() {
+    if (microphoneMeterFrameRef.current !== null) {
+      cancelAnimationFrame(microphoneMeterFrameRef.current);
+      microphoneMeterFrameRef.current = null;
+    }
+    microphoneSourceRef.current?.disconnect();
+    microphoneAnalyserRef.current?.disconnect();
+    microphoneSilentOutputRef.current?.disconnect();
+    microphoneAnalyserRef.current = null;
+    microphoneSourceRef.current = null;
+    microphoneSilentOutputRef.current = null;
+    const context = microphoneAudioContextRef.current;
+    microphoneAudioContextRef.current = null;
+    if (context && context.state !== "closed") {
+      context.close().catch((error) => {
+        console.error("Could not close the microphone signal meter.", error);
+      });
+    }
+  }
+
+  function playRecordingWithNotes() {
+    const audio = recordedAudioRef.current;
+    if (
+      !audio ||
+      !recordingUrl ||
+      !recordingSettings ||
+      (!dashboardMode && recordingExerciseId !== String(currentExercise?.id || "")) ||
+      recordingSettings.totalDuration <= 0
+    ) return;
+    if (playbackState === "paused" && playbackSource === "recording") {
+      setPlaybackState("playing");
+      return;
+    }
+    if (playbackState !== "stopped") return;
+    setRecordingError("");
+    playbackRangeEndRef.current = null;
+    setPlaybackSource("recording");
+    setPlaybackTime(0);
+    playbackTimeRef.current = 0;
+    audio.currentTime = 0;
+    startAudioAndCountdown(recordingSettings);
+  }
+
+  function playSelectedNoteRange() {
+    const audio = recordedAudioRef.current;
+    const reportNotes = performanceReport?.notes || [];
+    const selectedRange = getNoteRange(reportNotes, rangeStartNoteIndex, rangeEndNoteIndex);
+    if (
+      !audio ||
+      !recordingUrl ||
+      !recordingSettings ||
+      !selectedRange ||
+      playbackState !== "stopped"
+    ) return;
+
+    setRecordingError("");
+    setNoteSelectionTarget("");
+    playbackRangeEndRef.current = selectedRange.endTime;
+    setPlaybackSource("recording");
+    playbackTimeRef.current = selectedRange.startTime;
+    setPlaybackTime(selectedRange.startTime);
+    audio.currentTime = selectedRange.startTime;
+    setPlaybackState("playing");
+  }
+
+  function selectPerformanceNote(noteResults) {
+    const selection = chooseNoteSelectionCandidate(
+      noteResults,
+      noteSelectionTarget,
+      rangeStartNoteIndex,
+      rangeEndNoteIndex,
+    );
+    if (!selection) return;
+    setRangeStartNoteIndex(selection.startIndex);
+    setRangeEndNoteIndex(selection.endIndex);
+    setNoteSelectionTarget("");
+  }
+
+  async function trackCompletedListen() {
+    if (!user || user.role === "teacher" || !recordingId || playbackSource !== "recording") return;
+    try {
+      const result = await apiFetch(`/api/recordings/${recordingId}/listen/`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{}",
+      });
+      setSavedRecordings((current) => current.map((recording) => (
+        String(recording.exerciseId) === String(result.exerciseId)
+          ? {
+            ...recording,
+            listenCount: String(recording.id) === String(result.recordingId)
+              ? Math.max(recording.listenCount || 0, result.listenCount)
+              : recording.listenCount,
+            exerciseListenCount: Math.max(
+              recording.exerciseListenCount || 0,
+              result.exerciseListenCount,
+            ),
+          }
+          : recording
+      )));
+    } catch (error) {
+      setRecordingArchiveError(
+        error instanceof Error ? error.message : "Could not update your listening progress.",
+      );
+    }
+  }
+
+  async function savePracticeRecording() {
+    if (
+      !recordingBlob ||
+      !recordingSettings ||
+      recordingId ||
+      !user ||
+      !recordingOwnerKey ||
+      !/^\d+$/.test(recordingExerciseId)
+    ) return;
+
+    setRecordingSaveBusy(true);
+    setRecordingArchiveError("");
+    try {
+      const formData = new FormData();
+      formData.append("exercise_id", recordingExerciseId);
+      formData.append("settings", JSON.stringify(recordingSettings));
+      formData.append("audio", recordingBlob, "practice-recording");
+
+      const data = await apiFetch("/api/recordings/", {
+        method: "POST",
+        headers: { "X-Recording-Owner": recordingOwnerKey },
+        body: formData,
+      });
+      if (!data.recording?.id) {
+        throw new Error("The server saved the recording but returned an invalid response.");
+      }
+
+      setRecordingId(data.recording.id);
+      setSavedRecordings((current) => [
+        data.recording,
+        ...current.filter((recording) => recording.id !== data.recording.id),
+      ]);
+    } catch (error) {
+      setRecordingArchiveError(
+        error instanceof Error ? error.message : "Could not save this practice recording.",
+      );
+    } finally {
+      setRecordingSaveBusy(false);
+    }
+  }
+
+  async function loadSavedRecording(recording) {
+    if (!user || playbackState !== "stopped") return;
+    setLoadingRecordingId(recording.id);
+    setRecordingArchiveError("");
+    setRecordingCommentsError("");
+    try {
+      const response = await fetch(recording.audioUrl, {
+        credentials: "same-origin",
+      });
+      if (!response.ok) throw new Error(await getApiError(response));
+      const blob = await response.blob();
+      if (!blob.size) throw new Error("The saved recording contains no audio data.");
+      let comments = [];
+      try {
+        const data = await apiFetch(`/api/recordings/${recording.id}/comments/`);
+        if (!Array.isArray(data.comments)) {
+          throw new Error("The recording comments API returned an invalid response.");
+        }
+        comments = data.comments;
+      } catch (error) {
+        setRecordingCommentsError(
+          error instanceof Error ? error.message : "Could not load teacher comments.",
+        );
+      }
+
+      if (recordingUrlRef.current) URL.revokeObjectURL(recordingUrlRef.current);
+      const url = URL.createObjectURL(blob);
+      recordingUrlRef.current = url;
+      setRecordingBlob(blob);
+      setRecordingId(recording.id);
+      setRecordingComments(comments);
+      setSelectedRecordingCommentId(null);
+      setTeacherRatingDraft(
+        recording.teacherRating === null || recording.teacherRating === undefined
+          ? ""
+          : String(recording.teacherRating),
+      );
+      setEditingRecordingCommentId(null);
+      setRecordingCommentScope("table");
+      setRecordingCommentTableIndex("0");
+      setRecordingCommentRowIndex("0");
+      setRecordingCommentNoteIndex("0");
+      setRecordingCommentDraft("");
+      setRecordingExerciseId(String(recording.exerciseId));
+      setRecordingSettings(recording.settings);
+      setPerformanceReport(null);
+      setPerformanceAnalysisError("");
+      setRangeStartNoteIndex("");
+      setRangeEndNoteIndex("");
+      setPlaybackSource("recording");
+      setRecordingUrl(url);
+    } catch (error) {
+      setRecordingArchiveError(
+        error instanceof Error ? error.message : "Could not load this saved recording.",
+      );
+    } finally {
+      setLoadingRecordingId(null);
+    }
+  }
+
+  async function addRecordingComment(event) {
+    event.preventDefault();
+    if (
+      user?.role !== "teacher" ||
+      recordingId === null ||
+      recordingCommentBusy ||
+      !recordingCommentDraft.trim()
+    ) return;
+    setRecordingCommentBusy(true);
+    setRecordingCommentsError("");
+    try {
+      const payload = {
+        scope: recordingCommentScope,
+        tableIndex: Number(recordingCommentTableIndex),
+        comment: recordingCommentDraft.trim(),
+      };
+      if (recordingCommentScope !== "table") {
+        payload.rowIndex = Number(recordingCommentRowIndex);
+      }
+      if (recordingCommentScope === "note") {
+        payload.noteIndex = Number(recordingCommentNoteIndex);
+      }
+      const result = await apiFetch(`/api/recordings/${recordingId}/comments/`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      setRecordingComments((current) => [...current, result.comment]);
+      updateRecordingCommentCount(recordingId, 1);
+      setRecordingCommentDraft("");
+    } catch (error) {
+      setRecordingCommentsError(
+        error instanceof Error ? error.message : "Could not save this comment.",
+      );
+    } finally {
+      setRecordingCommentBusy(false);
+    }
+  }
+
+  async function saveRecordingCommentEdit(event, commentId) {
+    event.preventDefault();
+    if (recordingCommentBusy || !editingRecordingCommentText.trim()) return;
+    setRecordingCommentBusy(true);
+    setRecordingCommentsError("");
+    try {
+      const result = await apiFetch(
+        `/api/recordings/${recordingId}/comments/${commentId}/`,
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ comment: editingRecordingCommentText.trim() }),
+        },
+      );
+      setRecordingComments((current) => current.map((item) => (
+        item.id === commentId ? result.comment : item
+      )));
+      setEditingRecordingCommentId(null);
+      setEditingRecordingCommentText("");
+    } catch (error) {
+      setRecordingCommentsError(
+        error instanceof Error ? error.message : "Could not update this comment.",
+      );
+    } finally {
+      setRecordingCommentBusy(false);
+    }
+  }
+
+  async function deleteRecordingComment(commentId) {
+    if (recordingCommentBusy) return;
+    if (!window.confirm("Delete this teacher comment? This cannot be undone.")) return;
+    setRecordingCommentBusy(true);
+    setRecordingCommentsError("");
+    try {
+      await apiFetch(`/api/recordings/${recordingId}/comments/${commentId}/`, {
+        method: "DELETE",
+      });
+      setRecordingComments((current) => current.filter((item) => item.id !== commentId));
+      updateRecordingCommentCount(recordingId, -1);
+      setSelectedRecordingCommentId((current) => (
+        current === commentId ? null : current
+      ));
+      if (editingRecordingCommentId === commentId) {
+        setEditingRecordingCommentId(null);
+        setEditingRecordingCommentText("");
+      }
+    } catch (error) {
+      setRecordingCommentsError(
+        error instanceof Error ? error.message : "Could not delete this comment.",
+      );
+    } finally {
+      setRecordingCommentBusy(false);
+    }
+  }
+
+  function navigateToRecordingComment(commentId) {
+    setSelectedRecordingCommentId(commentId);
+    setCommentNavigationRequest((current) => current + 1);
+  }
+
+  function updateRecordingCommentCount(targetRecordingId, change) {
+    const updateCount = (recordings) => recordings.map((recording) => (
+      String(recording.id) === String(targetRecordingId)
+        ? {
+          ...recording,
+          teacherCommentCount: Math.max(0, (recording.teacherCommentCount || 0) + change),
+        }
+        : recording
+    ));
+    setSavedRecordings(updateCount);
+    setTeacherClassRecordings(updateCount);
+  }
+
+  async function saveTeacherRating(event) {
+    event.preventDefault();
+    if (user?.role !== "teacher" || recordingId === null || teacherRatingBusy) return;
+    const rating = teacherRatingDraft === "" ? null : Number(teacherRatingDraft);
+    if (
+      rating !== null &&
+      (!Number.isInteger(rating) || rating < 0 || rating > 100)
+    ) {
+      setRecordingCommentsError("Rating must be a whole-number percentage from 0 to 100.");
+      return;
+    }
+
+    setTeacherRatingBusy(true);
+    setRecordingCommentsError("");
+    try {
+      const result = await apiFetch(`/api/recordings/${recordingId}/rating/`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ rating }),
+      });
+      setTeacherRatingDraft(
+        result.teacherRating === null ? "" : String(result.teacherRating),
+      );
+      const updateRating = (recordings) => recordings.map((recording) => (
+        String(recording.id) === String(recordingId)
+          ? { ...recording, teacherRating: result.teacherRating }
+          : recording
+      ));
+      setSavedRecordings(updateRating);
+      setTeacherClassRecordings(updateRating);
+    } catch (error) {
+      setRecordingCommentsError(
+        error instanceof Error ? error.message : "Could not save this teacher rating.",
+      );
+    } finally {
+      setTeacherRatingBusy(false);
+    }
+  }
+
+  async function createMusicClass(event) {
+    event.preventDefault();
+    if (classActionBusy) return;
+    setClassActionBusy(true);
+    setClassWorkspaceError("");
+    setClassActionMessage("");
+    try {
+      const result = await apiFetch("/api/music-classes/", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(classForm),
+      });
+      await refreshClassWorkspace();
+      setSelectedTeachingClassId(String(result.class.id));
+      setClassForm({ name: "", teacherId: "", studentIds: [] });
+      setClassActionMessage(`Created ${result.class.name}.`);
+    } catch (error) {
+      setClassWorkspaceError(
+        error instanceof Error ? error.message : "Could not create the music class.",
+      );
+    } finally {
+      setClassActionBusy(false);
+    }
+  }
+
+  async function createClassHomework(event) {
+    event.preventDefault();
+    if (classActionBusy || !selectedTeachingClassId) return;
+    setClassActionBusy(true);
+    setClassWorkspaceError("");
+    setClassActionMessage("");
+    try {
+      await apiFetch("/api/homeworks/", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ...homeworkForm,
+          classId: selectedTeachingClassId,
+        }),
+      });
+      await refreshClassWorkspace();
+      setHomeworkForm({ title: "", description: "", dueDate: "" });
+      setClassActionMessage("Homework assigned to the class.");
+    } catch (error) {
+      setClassWorkspaceError(
+        error instanceof Error ? error.message : "Could not assign homework.",
+      );
+    } finally {
+      setClassActionBusy(false);
+    }
+  }
+
+  async function deleteSavedRecording(recording) {
+    const confirmed = window.confirm(
+      `Delete the recording for "${recording.exerciseTitle}"? Its audio file will also be deleted. This cannot be undone.`,
+    );
+    if (!confirmed || deletingRecordingId !== null) return;
+
+    setDeletingRecordingId(recording.id);
+    setRecordingArchiveError("");
+    try {
+      await apiFetch(`/api/recordings/${recording.id}/`, { method: "DELETE" });
+      setSavedRecordings((current) => current
+        .filter((item) => String(item.id) !== String(recording.id))
+        .map((item) => (
+          String(item.exerciseId) === String(recording.exerciseId)
+            ? {
+              ...item,
+              exerciseListenCount: Math.max(
+                0,
+                (item.exerciseListenCount || 0) - (recording.listenCount || 0),
+              ),
+            }
+            : item
+        )));
+      if (String(recordingId) === String(recording.id)) {
+        stopPlayback();
+        if (recordingUrlRef.current) URL.revokeObjectURL(recordingUrlRef.current);
+        recordingUrlRef.current = "";
+        setRecordingUrl("");
+        setRecordingBlob(null);
+        setRecordingId(null);
+        setRecordingComments([]);
+        setRecordingCommentsError("");
+        setRecordingExerciseId("");
+        setRecordingSettings(null);
+        setPerformanceReport(null);
+        setPerformanceAnalysisError("");
+      }
+    } catch (error) {
+      setRecordingArchiveError(
+        error instanceof Error ? error.message : "Could not delete the saved recording.",
+      );
+    } finally {
+      setDeletingRecordingId(null);
+    }
+  }
+
+  async function analyzeSelectedRecording() {
+    if (!recordingBlob || !recordingSettings || performanceAnalysisBusy) return;
+    setPerformanceAnalysisBusy(true);
+    setPerformanceAnalysisError("");
+    setPerformanceReport(null);
+    try {
+      const report = await analyzePracticeRecording(recordingBlob, recordingSettings);
+      if (!report.notes.length) {
+        throw new Error("No expected notes could be read from this recording's exercise snapshot.");
+      }
+      setPerformanceReport(report);
+      const firstIncorrectNote = report.notes.find((note) => note.status === "incorrect");
+      const initialRangeStart = firstIncorrectNote?.index ?? report.notes[0].index;
+      setRangeStartNoteIndex(String(initialRangeStart));
+      setRangeEndNoteIndex(String(initialRangeStart));
+    } catch (error) {
+      setPerformanceAnalysisError(
+        error instanceof Error ? error.message : "Could not analyze the recording.",
+      );
+    } finally {
+      setPerformanceAnalysisBusy(false);
+    }
+  }
+
   async function exportLessonVideo(presetKey = exportPresetKey) {
-    if (exportingVideo || !currentExercise || totalDuration <= 0) return;
+    if (user?.role !== "admin" || exportingVideo || !currentExercise || totalDuration <= 0) return;
     setExportError("");
     setExportProgress(0);
     setExportingVideo(true);
@@ -649,6 +1880,26 @@ export default function CarnaticPage() {
     setPlaybackTime(0);
     setCountdown(null);
     setPlaybackState("stopped");
+    playbackRangeEndRef.current = null;
+    setMicrophoneStarting(false);
+    startMicrophoneAfterCountdownRef.current = false;
+    const recorder = microphoneRecorderRef.current;
+    if (recorder?.state === "inactive") {
+      microphoneStreamRef.current?.getTracks().forEach((track) => track.stop());
+      microphoneStreamRef.current = null;
+      microphoneRecorderRef.current = null;
+      stopMicrophoneMeter();
+      setMicrophoneLevel(0);
+      setMicrophoneSignalDetected(false);
+      setMicrophoneWaveform([]);
+    } else if (recorder && recorder.state !== "inactive") {
+      recorder.stop();
+    }
+    if (playbackSource === "recording" && recordedAudioRef.current) {
+      recordedAudioRef.current.pause();
+      recordedAudioRef.current.currentTime = 0;
+    }
+    if (!dashboardMode) setPlaybackSource("instrument");
   }
 
   function chooseSession(sessionId) {
@@ -674,10 +1925,10 @@ export default function CarnaticPage() {
   const currentPlaybackPosition = isPlaybackAnimating
     ? getPlaybackNotePosition(
       playbackSchedule,
-      currentTalam?.beatNumbers || [],
-      beatGroups,
+      activeBeatNumbers,
+      activeBeatGroups,
       playbackTime,
-      bpm,
+      activePlaybackBpm,
     )
     : null;
   const currentBeatNumber =
@@ -689,23 +1940,837 @@ export default function CarnaticPage() {
       ? Number(currentPlaybackPosition.beatCount)
       : null;
   const currentBeatProgress = isPlaybackAnimating
-    ? getPlaybackBeatProgress(playbackSchedule, playbackTime, bpm)
+    ? getPlaybackBeatProgress(playbackSchedule, playbackTime, activePlaybackBpm)
     : 0;
   const currentBeatImageNumber = Number.isFinite(currentBeatNumber) && currentBeatProgress >= 0.9
     ? 9
     : currentBeatNumber;
+  const selectedTeachingClass = musicClassData.classes.find(
+    (item) => String(item.id) === String(selectedTeachingClassId),
+  ) || null;
+  const selectedClassHomeworks = classHomeworks.filter(
+    (item) => String(item.classId) === String(selectedTeachingClassId),
+  );
+  const recordingCommentTables = recordingSettings?.displaySchedule || [];
+  const recordingCommentRows = getRecordingCommentRows(
+    recordingSettings,
+    Number(recordingCommentTableIndex),
+  );
+  const selectedRecordingCommentNotes = (recordingCommentRows[
+    Number(recordingCommentRowIndex)
+  ] || [])
+    .flat()
+    .filter((note) => !note.startsWith(";"));
+
+  if (dashboardMode) {
+    return (
+      <main className="page carnatic-page">
+        <nav className="top-nav" aria-label="Main navigation">
+          <a href="/">Carnatic notes</a>
+          <span aria-current="page">Dashboard</span>
+          <AccountMenu />
+        </nav>
+
+        <section className="dashboard-header">
+          <p className="card-label">YOUR PRACTICE</p>
+          <h1>Practice dashboard</h1>
+          <p>Review your saved recordings and listening progress.</p>
+        </section>
+
+        {recordingArchiveError && (
+          <p className="practice-recording-error" role="alert">{recordingArchiveError}</p>
+        )}
+        {classWorkspaceError && (
+          <p className="practice-recording-error" role="alert">{classWorkspaceError}</p>
+        )}
+        {classActionMessage && (
+          <p className="class-action-message" role="status">{classActionMessage}</p>
+        )}
+        {!user ? (
+          <section className="saved-recordings-panel">
+            <h2>Sign in to view your dashboard</h2>
+            <p className="saved-recordings-empty">
+              Your saved recordings and practice progress are available after you sign in.
+            </p>
+          </section>
+        ) : (
+          <section className="dashboard-recordings">
+            <h2>Saved recordings</h2>
+            {savedRecordings.length ? (
+              <div className="dashboard-table-wrap">
+                <table className="dashboard-table">
+                  <thead>
+                    <tr>
+                      <th scope="col">Exercise</th>
+                      <th scope="col">Recorded</th>
+                      <th scope="col">Settings</th>
+                      <th scope="col">Exercise listens</th>
+                      <th scope="col">Teacher rating</th>
+                      <th scope="col">Teacher comments</th>
+                      <th scope="col">Action</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {savedRecordings.map((recording) => (
+                      <tr key={recording.id}>
+                        <td>{recording.sessionName} - {recording.exerciseTitle}</td>
+                        <td>{new Date(recording.createdAt).toLocaleString()}</td>
+                        <td>
+                          {recording.settings.bpm} BPM · {getShruthiLabel(recording.settings.shruthi)}
+                        </td>
+                        <td>{recording.exerciseListenCount ?? 0}</td>
+                        <td>
+                          {recording.teacherRating === null || recording.teacherRating === undefined
+                            ? "Not rated"
+                            : `${recording.teacherRating}%`}
+                        </td>
+                        <td>{recording.teacherCommentCount ?? 0}</td>
+                        <td className="dashboard-recording-actions">
+                          <button
+                            type="button"
+                            className="secondary"
+                            onClick={() => loadSavedRecording(recording)}
+                            disabled={
+                              playbackState !== "stopped" ||
+                              microphoneStarting ||
+                              microphoneRecording ||
+                              loadingRecordingId !== null ||
+                              deletingRecordingId !== null
+                            }
+                          >
+                            {loadingRecordingId === recording.id
+                              ? "Loading..."
+                              : recordingId === recording.id && recordingUrl
+                                ? "Selected"
+                                : "Open with notes"}
+                          </button>
+                          <button
+                            type="button"
+                            className="secondary dashboard-delete-button"
+                            onClick={() => deleteSavedRecording(recording)}
+                            disabled={
+                              deletingRecordingId !== null ||
+                              loadingRecordingId === recording.id ||
+                              (performanceAnalysisBusy &&
+                                String(recordingId) === String(recording.id)) ||
+                              (String(recordingId) === String(recording.id) &&
+                                playbackState !== "stopped")
+                            }
+                          >
+                            {deletingRecordingId === recording.id ? "Deleting..." : "Delete"}
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              !recordingArchiveError && (
+                <p className="saved-recordings-empty">You have no saved practice recordings yet.</p>
+              )
+            )}
+          </section>
+        )}
+
+        {user?.role === "admin" && (
+          <section className="class-workspace">
+            <h2>Create a music class</h2>
+            <p>Assign one teacher and one or more students. The teacher can then review their class recordings and assign homework.</p>
+            {musicClassData.classes.length > 0 && (
+              <ul className="music-class-list">
+                {musicClassData.classes.map((musicClass) => (
+                  <li key={musicClass.id}>
+                    <strong>{musicClass.name}</strong>
+                    {" · "}{musicClass.teacher.name}
+                    {" · "}{musicClass.students.length} student{musicClass.students.length === 1 ? "" : "s"}
+                  </li>
+                ))}
+              </ul>
+            )}
+            <form className="class-workspace-form" onSubmit={createMusicClass}>
+              <label>
+                Class name
+                <input
+                  value={classForm.name}
+                  onChange={(event) => setClassForm((current) => ({
+                    ...current,
+                    name: event.target.value,
+                  }))}
+                  maxLength={120}
+                  required
+                />
+              </label>
+              <label>
+                Teacher
+                <select
+                  value={classForm.teacherId}
+                  onChange={(event) => setClassForm((current) => ({
+                    ...current,
+                    teacherId: event.target.value,
+                  }))}
+                  required
+                >
+                  <option value="">Choose a teacher</option>
+                  {musicClassData.teachers.map((teacher) => (
+                    <option key={teacher.id} value={teacher.id}>
+                      {teacher.name} ({teacher.email})
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <fieldset className="class-student-picker">
+                <legend>Students</legend>
+                {musicClassData.students.length ? musicClassData.students.map((student) => (
+                  <label key={student.id}>
+                    <input
+                      type="checkbox"
+                      checked={classForm.studentIds.includes(String(student.id))}
+                      onChange={(event) => setClassForm((current) => ({
+                        ...current,
+                        studentIds: event.target.checked
+                          ? [...current.studentIds, String(student.id)]
+                          : current.studentIds.filter((id) => id !== String(student.id)),
+                      }))}
+                    />
+                    {student.name} ({student.email})
+                  </label>
+                )) : <p>No student accounts are available.</p>}
+              </fieldset>
+              <button
+                type="submit"
+                disabled={
+                  classActionBusy ||
+                  !musicClassData.teachers.length ||
+                  !musicClassData.students.length ||
+                  !classForm.studentIds.length
+                }
+              >
+                {classActionBusy ? "Creating…" : "Create class"}
+              </button>
+            </form>
+          </section>
+        )}
+
+        {user?.role === "teacher" && (
+          <section className="class-workspace">
+            <h2>Class workspace</h2>
+            {musicClassData.classes.length ? (
+              <>
+                <label className="class-picker-label">
+                  Music class
+                  <select
+                    value={selectedTeachingClassId}
+                    onChange={(event) => setSelectedTeachingClassId(event.target.value)}
+                  >
+                    {musicClassData.classes.map((musicClass) => (
+                      <option key={musicClass.id} value={musicClass.id}>{musicClass.name}</option>
+                    ))}
+                  </select>
+                </label>
+                {selectedTeachingClass && (
+                  <>
+                    <h3>Student recordings · {selectedTeachingClass.name}</h3>
+                    {teacherClassRecordings.length ? (
+                      <div className="dashboard-table-wrap">
+                        <table className="dashboard-table">
+                          <thead>
+                            <tr>
+                              <th scope="col">Student</th>
+                              <th scope="col">Exercise</th>
+                              <th scope="col">Recorded</th>
+                              <th scope="col">Settings</th>
+                              <th scope="col">Teacher rating</th>
+                              <th scope="col">Comments</th>
+                              <th scope="col">Action</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {teacherClassRecordings.map((recording) => (
+                              <tr key={recording.id}>
+                                <td>{recording.studentName}</td>
+                                <td>{recording.sessionName} - {recording.exerciseTitle}</td>
+                                <td>{new Date(recording.createdAt).toLocaleString()}</td>
+                                <td>
+                                  {recording.settings.bpm} BPM · {getShruthiLabel(recording.settings.shruthi)}
+                                </td>
+                                <td>
+                                  {recording.teacherRating === null || recording.teacherRating === undefined
+                                    ? "Not rated"
+                                    : `${recording.teacherRating}%`}
+                                </td>
+                                <td>{recording.teacherCommentCount ?? 0}</td>
+                                <td>
+                                  <button
+                                    type="button"
+                                    className="secondary"
+                                    onClick={() => loadSavedRecording(recording)}
+                                    disabled={playbackState !== "stopped" || loadingRecordingId !== null}
+                                  >
+                                    {loadingRecordingId === recording.id
+                                      ? "Loading…"
+                                      : String(recordingId) === String(recording.id) && recordingUrl
+                                        ? "Opened"
+                                        : "Open recording"}
+                                  </button>
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    ) : (
+                      <p className="saved-recordings-empty">No student recordings in this class yet.</p>
+                    )}
+                    <h3>Assign homework</h3>
+                    <form className="class-workspace-form" onSubmit={createClassHomework}>
+                      <label>
+                        Homework title
+                        <input
+                          value={homeworkForm.title}
+                          onChange={(event) => setHomeworkForm((current) => ({
+                            ...current,
+                            title: event.target.value,
+                          }))}
+                          maxLength={120}
+                          required
+                        />
+                      </label>
+                      <label>
+                        Instructions or target
+                        <textarea
+                          value={homeworkForm.description}
+                          onChange={(event) => setHomeworkForm((current) => ({
+                            ...current,
+                            description: event.target.value,
+                          }))}
+                          maxLength={5000}
+                          rows={3}
+                        />
+                      </label>
+                      <label>
+                        Due date
+                        <input
+                          type="date"
+                          value={homeworkForm.dueDate}
+                          onChange={(event) => setHomeworkForm((current) => ({
+                            ...current,
+                            dueDate: event.target.value,
+                          }))}
+                        />
+                      </label>
+                      <button type="submit" disabled={classActionBusy}>
+                        {classActionBusy ? "Saving…" : "Assign to class"}
+                      </button>
+                    </form>
+                    <h3>Homework progress</h3>
+                    {selectedClassHomeworks.length ? (
+                      <div className="class-homework-list">
+                        {selectedClassHomeworks.map((homework) => {
+                          const completionByStudent = new Map(
+                            homework.completions.map((completion) => [
+                              String(completion.student.id),
+                              completion,
+                            ]),
+                          );
+                          return (
+                            <article className="class-homework-card" key={homework.id}>
+                              <h4>{homework.title}</h4>
+                              {homework.dueDate && <p>Due {homework.dueDate}</p>}
+                              {homework.description && <p>{homework.description}</p>}
+                              <ul>
+                                {selectedTeachingClass.students.map((student) => {
+                                  const completion = completionByStudent.get(String(student.id));
+                                  return (
+                                    <li key={student.id}>
+                                      <strong>{student.name}</strong>
+                                      {" · "}{completion?.completed ? "Completed" : "Not completed"}
+                                      {completion?.note && <span> — {completion.note}</span>}
+                                    </li>
+                                  );
+                                })}
+                              </ul>
+                            </article>
+                          );
+                        })}
+                      </div>
+                    ) : (
+                      <p className="saved-recordings-empty">No homework has been assigned to this class.</p>
+                    )}
+                  </>
+                )}
+              </>
+            ) : (
+              <p className="saved-recordings-empty">You have not been assigned to a music class yet.</p>
+            )}
+          </section>
+        )}
+
+        {user?.role === "student" && (
+          <section className="class-workspace">
+            <h2>Class homework</h2>
+            {classHomeworks.length ? (
+              <div className="class-homework-list">
+                {classHomeworks.map((homework) => (
+                  <HomeworkCompletionCard
+                    key={homework.id}
+                    homework={homework}
+                    onSaved={refreshClassWorkspace}
+                  />
+                ))}
+              </div>
+            ) : (
+              <p className="saved-recordings-empty">
+                {musicClassData.classes.length
+                  ? "Your teacher has not assigned homework yet."
+                  : "You have not been assigned to a music class yet."}
+              </p>
+            )}
+          </section>
+        )}
+
+        {recordingUrl && recordingSettings && (
+          <section className="dashboard-player" aria-label="Recording playback">
+            <div className="practice-recording-heading">
+              <div>
+                <h2>{recordingSettings.exerciseTitle || "Selected practice recording"}</h2>
+                <p className="practice-recording-settings">
+                  {recordingSettings.bpm} BPM · Shruthi {getShruthiLabel(recordingSettings.shruthi)}
+                  {" · Excluded: "}
+                  {recordingSettings.displaySchedule
+                    .filter((table) => table.isExcluded)
+                    .map((table) => table.section.title || table.partKey)
+                    .join(", ") || "none"}
+                </p>
+              </div>
+              <div className="practice-recording-actions">
+                <button
+                  type="button"
+                  className="secondary"
+                  onClick={analyzeSelectedRecording}
+                  disabled={!recordingBlob || performanceAnalysisBusy}
+                >
+                  {performanceAnalysisBusy ? "Analyzing..." : "Analyze performance"}
+                </button>
+                <button
+                  type="button"
+                  className="secondary"
+                  onClick={() => {
+                    if (playbackState === "playing") pausePlayback();
+                    else if (playbackState === "paused" && playbackSource === "recording") {
+                      setPlaybackState("playing");
+                    } else playRecordingWithNotes();
+                  }}
+                  disabled={microphoneRecording || (
+                    playbackState !== "stopped" &&
+                    !(playbackState === "paused" && playbackSource === "recording") &&
+                    playbackState !== "playing"
+                  )}
+                >
+                  {playbackState === "playing"
+                    ? "Pause"
+                    : playbackState === "paused" && playbackSource === "recording"
+                      ? "Resume with notes"
+                      : "Play with notes"}
+                </button>
+                {playbackState !== "stopped" && (
+                  <button type="button" className="secondary" onClick={stopPlayback}>Stop</button>
+                )}
+              </div>
+            </div>
+            <audio
+              ref={recordedAudioRef}
+              className="practice-recording-audio"
+              src={recordingUrl}
+              controls
+              preload="metadata"
+              aria-label="Listen to your practice recording"
+              onEnded={trackCompletedListen}
+            />
+            <section className="recording-comments" aria-label="Teacher comments">
+              <div>
+                <h3>Teacher comments</h3>
+                <p>Comments saved for this recording stay with their table, row, or note.</p>
+              </div>
+              {user?.role === "teacher" ? (
+                <form className="recording-rating-form" onSubmit={saveTeacherRating}>
+                  <label>
+                    Recording quality (%)
+                    <input
+                      type="number"
+                      min="0"
+                      max="100"
+                      step="1"
+                      value={teacherRatingDraft}
+                      onChange={(event) => setTeacherRatingDraft(event.target.value)}
+                      aria-label="Recording quality percentage"
+                    />
+                  </label>
+                  <button type="submit" className="secondary" disabled={teacherRatingBusy}>
+                    {teacherRatingBusy ? "Saving…" : "Save rating"}
+                  </button>
+                  <span>Leave blank and save to remove the rating.</span>
+                </form>
+              ) : (
+                <p className="recording-rating-display">
+                  Teacher rating: {teacherRatingDraft === "" ? "Not rated" : `${teacherRatingDraft}%`}
+                </p>
+              )}
+              {recordingCommentsError && (
+                <p className="practice-recording-error" role="alert">{recordingCommentsError}</p>
+              )}
+              {recordingComments.length ? (
+                <ol className="recording-comment-list">
+                  {recordingComments.map((comment) => (
+                    <li
+                      id={`recording-comment-${comment.id}`}
+                      className={selectedRecordingCommentId === comment.id
+                        ? "recording-comment--selected"
+                        : ""}
+                      key={comment.id}
+                      tabIndex={0}
+                      aria-current={selectedRecordingCommentId === comment.id ? "true" : undefined}
+                      onClick={(event) => {
+                        if (
+                          event.target instanceof Element &&
+                          event.target.closest("button, input, textarea, select, form, a")
+                        ) return;
+                        setSelectedRecordingCommentId(comment.id);
+                      }}
+                      onKeyDown={(event) => {
+                        if (
+                          event.target !== event.currentTarget ||
+                          (event.key !== "Enter" && event.key !== " ")
+                        ) return;
+                        event.preventDefault();
+                        setSelectedRecordingCommentId(comment.id);
+                      }}
+                    >
+                      <div className="recording-comment-meta">
+                        <strong>{getRecordingCommentLocation(comment, recordingSettings)}</strong>
+                        <span>
+                          {comment.teacherName} · {new Date(comment.createdAt).toLocaleString()}
+                        </span>
+                      </div>
+                      {editingRecordingCommentId === comment.id ? (
+                        <form
+                          className="recording-comment-edit-form"
+                          onSubmit={(event) => saveRecordingCommentEdit(event, comment.id)}
+                        >
+                          <label>
+                            Edit comment
+                            <textarea
+                              value={editingRecordingCommentText}
+                              onChange={(event) => setEditingRecordingCommentText(event.target.value)}
+                              maxLength={2000}
+                              rows={3}
+                              required
+                            />
+                          </label>
+                          <div>
+                            <button type="submit" disabled={recordingCommentBusy}>
+                              {recordingCommentBusy ? "Saving…" : "Save comment"}
+                            </button>
+                            <button
+                              type="button"
+                              className="secondary"
+                              onClick={() => {
+                                setEditingRecordingCommentId(null);
+                                setEditingRecordingCommentText("");
+                              }}
+                              disabled={recordingCommentBusy}
+                            >
+                              Cancel
+                            </button>
+                          </div>
+                        </form>
+                      ) : (
+                        <p>{comment.comment}</p>
+                      )}
+                      {comment.canEdit && editingRecordingCommentId !== comment.id && (
+                        <div className="recording-comment-actions">
+                          <button
+                            type="button"
+                            className="secondary"
+                            onClick={() => {
+                              setEditingRecordingCommentId(comment.id);
+                              setEditingRecordingCommentText(comment.comment);
+                            }}
+                            disabled={recordingCommentBusy}
+                          >
+                            Edit
+                          </button>
+                          <button
+                            type="button"
+                            className="secondary recording-comment-delete"
+                            onClick={() => deleteRecordingComment(comment.id)}
+                            disabled={recordingCommentBusy}
+                          >
+                            Delete
+                          </button>
+                        </div>
+                      )}
+                    </li>
+                  ))}
+                </ol>
+              ) : (
+                <p className="saved-recordings-empty">There are no teacher comments on this recording yet.</p>
+              )}
+              {user?.role === "teacher" && (
+                <form className="recording-comment-form" onSubmit={addRecordingComment}>
+                  <label>
+                    Comment applies to
+                    <select
+                      value={recordingCommentScope}
+                      onChange={(event) => setRecordingCommentScope(event.target.value)}
+                    >
+                      <option value="table">A whole table</option>
+                      <option value="row">A row</option>
+                      <option value="note">A note</option>
+                    </select>
+                  </label>
+                  <label>
+                    Table
+                    <select
+                      value={recordingCommentTableIndex}
+                      onChange={(event) => {
+                        setRecordingCommentTableIndex(event.target.value);
+                        setRecordingCommentRowIndex("0");
+                        setRecordingCommentNoteIndex("0");
+                      }}
+                    >
+                      {recordingCommentTables.map((table, index) => (
+                        <option key={`${table.partKey}-${index}`} value={String(index)}>
+                          {getRecordingCommentTableLabel(table, index)}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  {recordingCommentScope !== "table" && (
+                    <label>
+                      Row
+                      <select
+                        value={recordingCommentRowIndex}
+                        onChange={(event) => {
+                          setRecordingCommentRowIndex(event.target.value);
+                          setRecordingCommentNoteIndex("0");
+                        }}
+                      >
+                        {recordingCommentRows.map((_, index) => (
+                          <option key={index} value={String(index)}>
+                            Row {index + 1}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  )}
+                  {recordingCommentScope === "note" && (
+                    <label>
+                      Note
+                      <select
+                        value={recordingCommentNoteIndex}
+                        onChange={(event) => setRecordingCommentNoteIndex(event.target.value)}
+                      >
+                        {selectedRecordingCommentNotes.map((note, index) => (
+                          <option key={`${note}-${index}`} value={String(index)}>
+                            {formatCarnaticNote(note)}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  )}
+                  <label className="recording-comment-text">
+                    Comment for the student
+                    <textarea
+                      value={recordingCommentDraft}
+                      onChange={(event) => setRecordingCommentDraft(event.target.value)}
+                      maxLength={2000}
+                      rows={3}
+                      required
+                    />
+                  </label>
+                  <button
+                    type="submit"
+                    disabled={
+                      recordingCommentBusy ||
+                      !recordingCommentDraft.trim() ||
+                      !recordingCommentTables.length ||
+                      (recordingCommentScope !== "table" && !recordingCommentRows.length) ||
+                      (recordingCommentScope === "note" && !selectedRecordingCommentNotes.length)
+                    }
+                  >
+                    {recordingCommentBusy ? "Saving…" : "Add comment"}
+                  </button>
+                </form>
+              )}
+            </section>
+            {performanceAnalysisError && (
+              <p className="practice-recording-error" role="alert">{performanceAnalysisError}</p>
+            )}
+            {performanceReport && (
+              <section className="performance-report" aria-label="Performance analysis report">
+                <h3>Performance report</h3>
+                <p className="performance-report-summary">
+                  {performanceReport.summary.accuracy === null
+                    ? "No notes could be scored."
+                    : `${performanceReport.summary.accuracy}% of analyzed notes were in tune.`}
+                  {" "}{performanceReport.summary.correct} correct · {performanceReport.summary.incorrect} need attention
+                  {performanceReport.summary.notRecognized > 0
+                    ? ` · ${performanceReport.summary.notRecognized} not recognized`
+                    : ""}
+                  {performanceReport.summary.tooShort > 0
+                    ? ` · ${performanceReport.summary.tooShort} too short to analyze`
+                    : ""}
+                </p>
+                <p className="performance-report-note">
+                  Notes are compared at the saved exercise timing and shruthi, with a
+                  {" "}{performanceReport.summary.toleranceCents}-cent tuning allowance.
+                  Matching pitch classes count as correct across octaves.
+                  Short notes, accompaniment, room noise, and gamaka can affect pitch detection.
+                  {" "}Review the animated notes below: green ticks are in tune; hover over a
+                  red cross for the detected pitch and tuning difference. Select a note range to
+                  replay that part with the moving notes.
+                </p>
+                <div className="performance-range-controls">
+                  <div className="performance-range-field">
+                    <button
+                      type="button"
+                      className={`secondary performance-table-select ${
+                        noteSelectionTarget === "from" ? "performance-table-select--active" : ""
+                      }`}
+                      aria-pressed={noteSelectionTarget === "from"}
+                      onClick={() => setNoteSelectionTarget(
+                        noteSelectionTarget === "from" ? "" : "from",
+                      )}
+                      disabled={playbackState !== "stopped"}
+                    >
+                      Select From
+                    </button>
+                    <label htmlFor="performance-range-from">From note</label>
+                    <select
+                      id="performance-range-from"
+                      value={rangeStartNoteIndex}
+                      onChange={(event) => {
+                        const nextStart = event.target.value;
+                        setRangeStartNoteIndex(nextStart);
+                        if (Number(rangeEndNoteIndex) < Number(nextStart)) {
+                          setRangeEndNoteIndex(nextStart);
+                        }
+                      }}
+                      disabled={playbackState !== "stopped"}
+                    >
+                      {performanceReport.notes.map((note) => (
+                        <option value={String(note.index)} key={`from-${note.index}`}>
+                          {note.index + 1}. {note.note} ({formatPlaybackTimestamp(note.startTime)})
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="performance-range-field">
+                    <button
+                      type="button"
+                      className={`secondary performance-table-select ${
+                        noteSelectionTarget === "to" ? "performance-table-select--active" : ""
+                      }`}
+                      aria-pressed={noteSelectionTarget === "to"}
+                      onClick={() => setNoteSelectionTarget(
+                        noteSelectionTarget === "to" ? "" : "to",
+                      )}
+                      disabled={playbackState !== "stopped"}
+                    >
+                      Select To
+                    </button>
+                    <label htmlFor="performance-range-to">To note</label>
+                    <select
+                      id="performance-range-to"
+                      value={rangeEndNoteIndex}
+                      onChange={(event) => setRangeEndNoteIndex(event.target.value)}
+                      disabled={playbackState !== "stopped"}
+                    >
+                      {performanceReport.notes
+                        .filter((note) => note.index >= Number(rangeStartNoteIndex))
+                        .map((note) => (
+                          <option value={String(note.index)} key={`to-${note.index}`}>
+                            {note.index + 1}. {note.note} ({formatPlaybackTimestamp(note.endTime)})
+                          </option>
+                        ))}
+                    </select>
+                  </div>
+                  <button
+                    type="button"
+                    className="secondary"
+                    onClick={playSelectedNoteRange}
+                    disabled={playbackState !== "stopped" || !rangeStartNoteIndex || !rangeEndNoteIndex}
+                  >
+                    Play selected notes
+                  </button>
+                </div>
+                {noteSelectionTarget && (
+                  <p className="performance-range-prompt" role="status">
+                    Select a note in the animated table to set the {noteSelectionTarget === "from" ? "start" : "end"} of the range.
+                  </p>
+                )}
+              </section>
+            )}
+            {recordingError && (
+              <p className="practice-recording-error" role="alert">{recordingError}</p>
+            )}
+            {countdown !== null && (
+              <div className="count-in" key={countdown} role="status" aria-live="assertive">
+                {countdown}
+              </div>
+            )}
+            {recordingSettings.exerciseSnapshot && (
+              <Exercise
+                exercise={activeExercise}
+                sections={activeExerciseSections}
+                tableSchedule={displaySchedule}
+                beats={activePlaybackBeats}
+                cyclesPerRow={activeCyclesPerRow}
+                beatGroups={activeBeatGroups}
+                beatNumbers={activeBeatNumbers}
+                playbackTime={playbackTime}
+                bpm={activePlaybackBpm}
+                controlsDisabled
+                onToggleExclude={toggleExcludePart}
+                performanceReport={performanceReport}
+                noteSelectionTarget={noteSelectionTarget}
+                onSelectPerformanceNote={selectPerformanceNote}
+                rangeStartNoteIndex={rangeStartNoteIndex}
+                rangeEndNoteIndex={rangeEndNoteIndex}
+                recordingComments={recordingComments}
+                selectedRecordingCommentId={selectedRecordingCommentId}
+                onSelectRecordingComment={navigateToRecordingComment}
+              />
+            )}
+          </section>
+        )}
+      </main>
+    );
+  }
 
   return (
     <main className="page carnatic-page">
       <nav className="top-nav" aria-label="Main navigation">
         <span aria-current="page">Carnatic notes</span>
+        <AccountMenu />
       </nav>
+
+      {curriculumError && (
+        <p className="curriculum-api-error" role="alert">
+          Could not load backend curriculum. Showing built-in sample data instead. {curriculumError}
+        </p>
+      )}
 
       <section className="carnatic-controls" aria-label="Curriculum selection">
         <div className="controls-row curriculum-row">
           <label className="curriculum-select">
             <span className="control-label">Session</span>
-            <select value={selectedSessionId} onChange={(event) => chooseSession(event.target.value)}>
+            <select
+              value={selectedSessionId}
+              disabled={microphoneStarting || microphoneRecording}
+              onChange={(event) => chooseSession(event.target.value)}
+            >
               {sessions.map((session) => (
                 <option value={String(session.id)} key={session.id}>
                   {session.parentId ? `  └ ${session.name}` : session.name}
@@ -718,6 +2783,7 @@ export default function CarnaticPage() {
             <span className="control-label">Exercise</span>
             <select
               value={currentExercise ? String(currentExercise.id) : ""}
+              disabled={microphoneStarting || microphoneRecording}
               onChange={(event) => {
                 stopPlayback();
                 setExcludedPartKeys([]);
@@ -735,6 +2801,7 @@ export default function CarnaticPage() {
             {allowRagamChange ? (
               <select
                 value={selectedMelakartaId}
+                disabled={microphoneStarting || microphoneRecording}
                 onChange={(event) => {
                   stopPlayback();
                   setSelectedMelakartaId(event.target.value);
@@ -764,9 +2831,9 @@ export default function CarnaticPage() {
 
           <div className="talam-badge-container">
             <span className="control-label">Talam</span>
-            <div className="talam-badge" title={`${currentTalam?.name || currentExercise?.talamName || "Talam"} (${currentTalam?.beats || currentExercise?.talamBeats || 0} beats)`}>
-              <span className="talam-name">{currentTalam?.name || currentExercise?.talamName || "No Talam"}</span>
-              <span className="talam-beats">{currentTalam?.beats || currentExercise?.talamBeats || 0} beats</span>
+            <div className="talam-badge" title={`${activeTalamName || currentExercise?.talamName || "Talam"} (${activePlaybackBeats || 0} beats)`}>
+              <span className="talam-name">{activeTalamName || currentExercise?.talamName || "No Talam"}</span>
+              <span className="talam-beats">{activePlaybackBeats || 0} beats</span>
             </div>
           </div>
 
@@ -777,6 +2844,11 @@ export default function CarnaticPage() {
               min="20"
               max="300"
               value={bpm}
+              disabled={
+                microphoneStarting ||
+                microphoneRecording ||
+                (playbackState === "counting" && startMicrophoneAfterCountdownRef.current)
+              }
               onChange={(event) => {
                 stopPlayback();
                 setBpm(Math.max(20, Math.min(300, Number(event.target.value) || 20)));
@@ -790,7 +2862,15 @@ export default function CarnaticPage() {
         <div className="controls-row audio-row">
           <label className="curriculum-select shruthi-pitch-select">
             <span className="control-label">Shruthi</span>
-            <select value={shruthi} onChange={(event) => setShruthi(event.target.value)}>
+            <select
+              value={shruthi}
+              disabled={
+                microphoneStarting ||
+                microphoneRecording ||
+                (playbackState === "counting" && startMicrophoneAfterCountdownRef.current)
+              }
+              onChange={(event) => setShruthi(event.target.value)}
+            >
               {SHRUTHI_OPTIONS.map((group) => (
                 <optgroup label={group.label} key={group.label}>
                   {group.notes.map((note) => (
@@ -852,6 +2932,7 @@ export default function CarnaticPage() {
             <span className="control-label">Instrument</span>
             <select
               value={instrument}
+              disabled={microphoneStarting || microphoneRecording}
               onChange={(event) => {
                 stopPlayback();
                 setInstrument(event.target.value);
@@ -883,22 +2964,69 @@ export default function CarnaticPage() {
         </div>
 
         <div className="export-controls-row">
-          <button
-            type="button"
-            className="secondary"
-            onClick={() => {
-              setExportError("");
-              setExportModalOpen(true);
-            }}
-            disabled={
-              exportingVideo ||
-              playbackState !== "stopped" ||
-              !currentExercise ||
-              totalDuration <= 0
-            }
-          >
-            Export Video
-          </button>
+          <div className="recording-source-controls">
+            <label className="microphone-source-select">
+              <span>Recording source</span>
+              <select
+                value={microphoneDeviceId}
+                onChange={(event) => setMicrophoneDeviceId(event.target.value)}
+                disabled={microphoneRecording || playbackState !== "stopped"}
+                aria-describedby={microphoneDeviceError ? "microphone-source-status" : undefined}
+              >
+                <option value="default">Default microphone</option>
+                {microphoneDevices
+                  .filter((device) => device.deviceId && device.deviceId !== "default")
+                  .map((device, index) => (
+                    <option value={device.deviceId} key={device.deviceId}>
+                      {device.label || `Microphone ${index + 1}`}
+                    </option>
+                  ))}
+              </select>
+              {microphoneDeviceError && (
+                <span id="microphone-source-status" className="microphone-source-error" role="status">
+                  {microphoneDeviceError}
+                </span>
+              )}
+            </label>
+            <button
+              type="button"
+              className={`record-practice-button${microphoneRecording ? " record-practice-button--recording" : ""}`}
+              onClick={microphoneRecording ? stopPlayback : startMicrophoneRecording}
+              disabled={
+                microphoneStarting ||
+                exportingVideo ||
+                !currentExercise ||
+                totalDuration <= 0 ||
+                (!microphoneRecording && playbackState !== "stopped")
+              }
+              aria-pressed={microphoneRecording}
+            >
+              <span className="record-practice-indicator" aria-hidden="true" />
+              {microphoneStarting
+                ? "Starting..."
+                : microphoneRecording
+                  ? "Stop recording"
+                  : "Record"}
+            </button>
+          </div>
+          {user?.role === "admin" && (
+            <button
+              type="button"
+              className="secondary"
+              onClick={() => {
+                setExportError("");
+                setExportModalOpen(true);
+              }}
+              disabled={
+                exportingVideo ||
+                playbackState !== "stopped" ||
+                !currentExercise ||
+                totalDuration <= 0
+              }
+            >
+              Export Video
+            </button>
+          )}
         </div>
       </section>
 
@@ -958,25 +3086,137 @@ export default function CarnaticPage() {
               Stop
             </button>
           </div>
-          <div className="beat-image-placeholder" aria-live="polite">
-            <span className="beat-count">
-              {Number.isFinite(currentBeatCount) ? currentBeatCount : "—"}
-            </span>
-            {Number.isFinite(currentBeatImageNumber) && (
-              <img
-                key={currentBeatImageNumber}
-                src={`/beat-images/beat-${currentBeatImageNumber}.jpeg`}
-                alt={`Beat ${currentBeatImageNumber}`}
-                onError={(event) => {
-                  event.currentTarget.hidden = true;
-                }}
-                onLoad={(event) => {
-                  event.currentTarget.hidden = false;
-                }}
-              />
+          <div className="talam-recording-group">
+            <div className="beat-image-placeholder" aria-live="polite">
+              <span className="beat-count">
+                {Number.isFinite(currentBeatCount) ? currentBeatCount : "—"}
+              </span>
+              {Number.isFinite(currentBeatImageNumber) && (
+                <img
+                  key={currentBeatImageNumber}
+                  src={`/beat-images/beat-${currentBeatImageNumber}.jpeg`}
+                  alt={`Beat ${currentBeatImageNumber}`}
+                  onError={(event) => {
+                    event.currentTarget.hidden = true;
+                  }}
+                  onLoad={(event) => {
+                    event.currentTarget.hidden = false;
+                  }}
+                />
+              )}
+            </div>
+            {microphoneRecording && (
+              <div
+                className={`recording-signal-indicator recording-signal-indicator--recording${microphoneSignalDetected ? " recording-signal-indicator--active" : ""}`}
+                role="meter"
+                title={`Microphone input ${Math.round(microphoneLevel * 100)}%`}
+                aria-valuemin="0"
+                aria-valuemax="100"
+                aria-valuenow={Math.round(microphoneLevel * 100)}
+                aria-label={
+                  microphoneSignalDetected
+                    ? "Microphone signal detected"
+                    : "No microphone signal detected"
+                }
+              >
+                <span className="recording-signal-r">R</span>
+                <svg
+                  className="recording-waveform"
+                  viewBox="0 0 128 40"
+                  preserveAspectRatio="none"
+                  aria-hidden="true"
+                >
+                  <polyline
+                    points={microphoneWaveform
+                      .map((level, index) => `${index * 4},${20 - level * 17}`)
+                      .join(" ")}
+                  />
+                </svg>
+              </div>
             )}
           </div>
         </div>
+
+        {(microphoneRecording ||
+          (recordingUrl && recordingExerciseId === String(currentExercise?.id || "")) ||
+          recordingError) && (
+          <section
+            className="practice-recording-panel"
+            aria-label="Practice recording"
+            aria-live="polite"
+          >
+            <div className="practice-recording-heading">
+              <div>
+                <h3>{microphoneRecording ? "Recording your practice" : "Practice recording"}</h3>
+                <p>
+                  {microphoneRecording
+                    ? "The microphone is recording while the exercise plays. Press Stop to finish early."
+                    : recordingUrl
+                      ? "Listen to your recording or replay it alongside the moving notes."
+                      : "Check microphone access, then try recording again."}
+                </p>
+                {(microphoneRecording || recordingUrl) && recordingSettings && (
+                  <p className="practice-recording-settings">
+                    {microphoneRecording ? "Recording at" : "Recorded at"} {recordingSettings.bpm} BPM · Shruthi {getShruthiLabel(recordingSettings.shruthi)} · {CARNATIC_INSTRUMENTS.find((option) => option.id === recordingSettings.instrument)?.label || recordingSettings.instrument}
+                  </p>
+                )}
+              </div>
+              {recordingUrl && recordingExerciseId === String(currentExercise?.id || "") && (
+                <div className="practice-recording-actions">
+                  <button
+                    type="button"
+                    className="secondary"
+                    onClick={playRecordingWithNotes}
+                    disabled={
+                      microphoneRecording ||
+                      (playbackState !== "stopped" &&
+                        !(playbackState === "paused" && playbackSource === "recording"))
+                    }
+                  >
+                    {playbackState === "paused" && playbackSource === "recording"
+                      ? "Resume with notes"
+                      : "Play recording with notes"}
+                  </button>
+                  {recordingBlob && (
+                    <button
+                      type="button"
+                      className="secondary"
+                      onClick={savePracticeRecording}
+                      disabled={
+                        recordingId !== null ||
+                        recordingSaveBusy ||
+                        !user ||
+                        !recordingOwnerKey ||
+                        !/^\d+$/.test(recordingExerciseId) ||
+                        recordingExerciseId !== String(currentExercise?.id || "")
+                      }
+                    >
+                      {recordingId !== null
+                        ? "Saved on Docker"
+                        : recordingSaveBusy
+                          ? "Saving..."
+                          : "Save recording"}
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
+            {recordingUrl && recordingExerciseId === String(currentExercise?.id || "") && (
+              <audio
+                ref={recordedAudioRef}
+                className="practice-recording-audio"
+                src={recordingUrl}
+                controls
+                preload="metadata"
+                aria-label="Listen to your practice recording"
+                onEnded={trackCompletedListen}
+              />
+            )}
+            {recordingError && (
+              <p className="practice-recording-error" role="alert">{recordingError}</p>
+            )}
+          </section>
+        )}
 
         {countdown !== null && (
           <div className="count-in" key={countdown} role="status" aria-live="assertive">
@@ -986,15 +3226,16 @@ export default function CarnaticPage() {
 
         {currentExercise ? (
           <Exercise
-            exercise={currentExercise}
-            sections={exerciseSections}
+            exercise={activeExercise}
+            sections={activeExerciseSections}
             tableSchedule={displaySchedule}
-            beats={selectedBeats}
-            cyclesPerRow={cyclesPerRow}
-            beatGroups={beatGroups}
-            beatNumbers={currentTalam?.beatNumbers || []}
+            beats={activePlaybackBeats}
+            cyclesPerRow={activeCyclesPerRow}
+            beatGroups={activeBeatGroups}
+            beatNumbers={activeBeatNumbers}
             playbackTime={playbackTime}
-            bpm={bpm}
+            bpm={activePlaybackBpm}
+            controlsDisabled={microphoneStarting || microphoneRecording}
             onToggleExclude={toggleExcludePart}
           />
         ) : (
@@ -1015,21 +3256,121 @@ export default function CarnaticPage() {
         </div>
       </footer>
 
-      <ExportVideoModal
-        isOpen={exportModalOpen}
-        selectedPresetKey={exportPresetKey}
-        onSelectPreset={selectExportPreset}
-        onProcess={exportLessonVideo}
-        onCancel={() => {
-          if (!exportingVideo) setExportModalOpen(false);
-        }}
-        isProcessing={exportingVideo}
-        progress={{ value: exportProgress, format: exportFormat }}
-        error={exportError}
-        video={readyLessonVideo}
-      />
+      {user?.role === "admin" && (
+        <ExportVideoModal
+          isOpen={exportModalOpen}
+          selectedPresetKey={exportPresetKey}
+          onSelectPreset={selectExportPreset}
+          onProcess={exportLessonVideo}
+          onCancel={() => {
+            if (!exportingVideo) setExportModalOpen(false);
+          }}
+          isProcessing={exportingVideo}
+          progress={{ value: exportProgress, format: exportFormat }}
+          error={exportError}
+          video={readyLessonVideo}
+        />
+      )}
     </main>
   );
+}
+
+function HomeworkCompletionCard({ homework, onSaved }) {
+  const [completed, setCompleted] = useState(homework.completed);
+  const [note, setNote] = useState(homework.completionNote || "");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    setCompleted(homework.completed);
+    setNote(homework.completionNote || "");
+  }, [homework.id, homework.completed, homework.completionNote]);
+
+  async function saveCompletion(event) {
+    event.preventDefault();
+    if (busy) return;
+    setBusy(true);
+    setError("");
+    try {
+      await apiFetch(`/api/homeworks/${homework.id}/completion/`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ completed, note }),
+      });
+      await onSaved();
+    } catch (caught) {
+      setError(caught instanceof Error ? caught.message : "Could not save your homework update.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <article className="class-homework-card">
+      <p className="class-homework-class">{homework.className}</p>
+      <h3>{homework.title}</h3>
+      {homework.dueDate && <p className="class-homework-due">Due {homework.dueDate}</p>}
+      {homework.description && <p>{homework.description}</p>}
+      <form className="homework-completion-form" onSubmit={saveCompletion}>
+        <label className="homework-completed-toggle">
+          <input
+            type="checkbox"
+            checked={completed}
+            onChange={(event) => setCompleted(event.target.checked)}
+          />
+          I completed this homework
+        </label>
+        <label>
+          Note to your teacher
+          <textarea
+            value={note}
+            onChange={(event) => setNote(event.target.value)}
+            maxLength={2000}
+            rows={3}
+            required={completed}
+          />
+        </label>
+        {error && <p className="practice-recording-error" role="alert">{error}</p>}
+        <button type="submit" disabled={busy}>
+          {busy ? "Saving…" : "Save update"}
+        </button>
+      </form>
+    </article>
+  );
+}
+
+function getRecordingCommentRows(recordingSettings, tableIndex) {
+  const table = recordingSettings?.displaySchedule?.[tableIndex];
+  if (!table || table.isExcluded || !Array.isArray(table.notes)) return [];
+  return buildTalamRows(
+    table.notes,
+    table.beats || recordingSettings.beats,
+    table.notesPerBeat || 1,
+    table.cyclesPerRow || recordingSettings.cyclesPerRow || 1,
+    table.repeatToCompleteTalam ?? recordingSettings.repeatToCompleteTalam ?? true,
+    table.completeTalamWithEmptyNotes
+      ?? recordingSettings.completeTalamWithEmptyNotes
+      ?? false,
+  );
+}
+
+function getRecordingCommentTableLabel(table, index) {
+  const title = table.section?.title || table.partKey || `Table ${index + 1}`;
+  return `${index + 1}. ${title} · ${table.notesPerBeat} note${table.notesPerBeat === 1 ? "" : "s"}/beat`;
+}
+
+function getRecordingCommentLocation(comment, recordingSettings) {
+  const table = recordingSettings?.displaySchedule?.[comment.tableIndex];
+  const tableName = table
+    ? getRecordingCommentTableLabel(table, comment.tableIndex)
+    : `Table ${comment.tableIndex + 1}`;
+  if (comment.scope === "table") return tableName;
+
+  const row = getRecordingCommentRows(recordingSettings, comment.tableIndex)[comment.rowIndex];
+  const location = `${tableName} · Row ${comment.rowIndex + 1}`;
+  if (comment.scope !== "note" || !row) return location;
+  const note = row.flat().filter((item) => !item.startsWith(";"))[comment.noteIndex];
+  return note ? `${location} · Note ${formatCarnaticNote(note)}` : location;
 }
 
 function getExerciseSections(exercise) {
@@ -1060,7 +3401,16 @@ function Exercise({
   beatNumbers,
   playbackTime,
   bpm,
+  controlsDisabled,
   onToggleExclude,
+  performanceReport,
+  noteSelectionTarget,
+  onSelectPerformanceNote,
+  rangeStartNoteIndex,
+  rangeEndNoteIndex,
+  recordingComments = [],
+  selectedRecordingCommentId,
+  onSelectRecordingComment,
 }) {
   const repeatToCompleteTalam = exercise?.repeatToCompleteTalam ?? true;
   const completeTalamWithEmptyNotes =
@@ -1078,6 +3428,16 @@ function Exercise({
       </h3>
       : null;
     previousSectionKey = table.sectionKey;
+    const noteFeedback = new Map();
+    for (const result of performanceReport?.notes || []) {
+      if (
+        String(result.partKey) !== String(table.partKey) ||
+        String(result.sectionIndex) !== String(table.sectionIndex)
+      ) continue;
+      const results = noteFeedback.get(result.tableNoteIndex) || [];
+      results.push(result);
+      noteFeedback.set(result.tableNoteIndex, results);
+    }
     return (
       <Fragment key={`${table.sectionIndex}-${table.notesPerBeat}-${index}`}>
         {sectionHeading}
@@ -1091,6 +3451,7 @@ function Exercise({
           notesPerBeat={table.notesPerBeat}
           playbackTime={playbackTime}
           bpm={bpm}
+          controlsDisabled={controlsDisabled}
           tableStartTime={table.tableStartTime}
           tableDuration={table.duration}
           repeatCount={table.repeatCount || 1}
@@ -1099,6 +3460,15 @@ function Exercise({
           isExcluded={table.isExcluded}
           partKey={table.partKey}
           onToggleExclude={onToggleExclude}
+          noteFeedback={noteFeedback}
+          noteSelectionTarget={noteSelectionTarget}
+          onSelectPerformanceNote={onSelectPerformanceNote}
+          rangeStartNoteIndex={rangeStartNoteIndex}
+          rangeEndNoteIndex={rangeEndNoteIndex}
+          tableIndex={index}
+          recordingComments={recordingComments}
+          selectedRecordingCommentId={selectedRecordingCommentId}
+          onSelectRecordingComment={onSelectRecordingComment}
         />
       </Fragment>
     );
@@ -1303,6 +3673,7 @@ function NoteTable({
   notesPerBeat,
   playbackTime,
   bpm,
+  controlsDisabled,
   tableStartTime,
   tableDuration,
   repeatCount,
@@ -1311,6 +3682,15 @@ function NoteTable({
   isExcluded = false,
   partKey,
   onToggleExclude,
+  noteFeedback,
+  noteSelectionTarget,
+  onSelectPerformanceNote,
+  rangeStartNoteIndex,
+  rangeEndNoteIndex,
+  tableIndex,
+  recordingComments = [],
+  selectedRecordingCommentId,
+  onSelectRecordingComment,
 }) {
   const rows = buildTalamRows(
     notes,
@@ -1320,6 +3700,27 @@ function NoteTable({
     repeatToCompleteTalam,
     completeTalamWithEmptyNotes,
   );
+  let soundingNoteIndex = 0;
+  const noteFeedbackByPosition = rows.map((row) => row.map((cell) => cell.map((note) => {
+    if (note.startsWith(";")) return null;
+    const feedback = noteFeedback?.get(soundingNoteIndex) || null;
+    soundingNoteIndex += 1;
+    return feedback;
+  })));
+  const noteCommentIndexByPosition = rows.map((row) => {
+    let commentNoteIndex = 0;
+    return row.map((cell) => cell.map((note) => {
+      if (note.startsWith(";")) return null;
+      const currentIndex = commentNoteIndex;
+      commentNoteIndex += 1;
+      return currentIndex;
+    }));
+  });
+  const tableComments = recordingComments.filter(
+    (comment) => comment.tableIndex === tableIndex,
+  );
+  const tableLevelComments = tableComments.filter((comment) => comment.scope === "table");
+  const rowComments = tableComments.filter((comment) => comment.scope === "row");
   const lyricRows = lyrics.length
     ? buildTalamRows(
         lyrics,
@@ -1380,10 +3781,30 @@ function NoteTable({
             </span>
           )}
         </div>
+        {tableLevelComments.length > 0 && (
+          <div className="recording-comment-markers">
+            {tableLevelComments.map((comment) => (
+              <button
+                type="button"
+                className={`recording-comment-marker ${
+                  selectedRecordingCommentId === comment.id ? "recording-comment-marker--active" : ""
+                }`}
+                key={comment.id}
+                aria-pressed={selectedRecordingCommentId === comment.id}
+                aria-label={`Show table comment from ${comment.teacherName}`}
+                title="Show teacher comment for this table"
+                onClick={() => onSelectRecordingComment(comment.id)}
+              >
+                {COMMENT_MARKER}
+              </button>
+            ))}
+          </div>
+        )}
         <label className="exclude-table-toggle" title="Exclude this table from playing">
           <input
             type="checkbox"
             checked={Boolean(isExcluded)}
+            disabled={controlsDisabled}
             onChange={() => onToggleExclude && onToggleExclude(partKey)}
           />
           <span>Exclude</span>
@@ -1443,22 +3864,145 @@ function NoteTable({
                       {group.map((beatIndex) => (
                         <span className="beat-content" key={beatIndex}>
                           {row[beatIndex]?.map((note, noteIndex) => (
-                            <span
-                              className={[
-                                "swar",
-                                ...getCarnaticNoteClasses(note),
-                                hasPlaybackPosition &&
-                                currentRowIndex === rowIndex &&
-                                currentBeatIndex === beatIndex &&
-                                currentNoteIndexInCell === noteIndex
-                                  ? "swar-active"
-                                  : "",
-                              ].join(" ")}
-                              key={`${note}-${noteIndex}`}
-                            >
-                              {formatCarnaticNote(note)}
-                            </span>
+                            (() => {
+                              const commentNoteIndex = noteCommentIndexByPosition[rowIndex]?.[beatIndex]?.[noteIndex];
+                              const noteComments = tableComments.filter(
+                                (comment) => comment.scope === "note"
+                                  && comment.rowIndex === rowIndex
+                                  && comment.noteIndex === commentNoteIndex,
+                              );
+                              const feedback = noteFeedbackByPosition[rowIndex]?.[beatIndex]?.[noteIndex];
+                              const canSelectFromTable = Boolean(noteSelectionTarget && feedback?.length);
+                              const isSelectedRangeBoundary = feedback?.some((result) => (
+                                String(result.index) === String(rangeStartNoteIndex) ||
+                                String(result.index) === String(rangeEndNoteIndex)
+                              ));
+                              const incorrect = feedback?.filter((result) => result.status === "incorrect") || [];
+                              const unverifiable = feedback?.filter(
+                                (result) => result.status === "notRecognized" || result.status === "tooShort",
+                              ) || [];
+                              const allCorrect = feedback?.length > 0
+                                && feedback.every((result) => result.status === "correct");
+                              const indicatorTitle = incorrect.length
+                                ? incorrect.map((result) => (
+                                  `${result.detectedSwara || "Unmapped swara"}${
+                                    result.detectedRegister > 0
+                                      ? `, higher octave +${result.detectedRegister}`
+                                      : result.detectedRegister < 0
+                                        ? `, lower octave ${result.detectedRegister}`
+                                        : ""
+                                  } played; ${result.semitoneDifference} semitone${
+                                    result.semitoneDifference === 1 ? "" : "s"
+                                  } ${result.direction} compared with expected ${result.note}.`
+                                )).join("\n")
+                                : unverifiable.length
+                                  ? unverifiable.map((result) => (
+                                    result.status === "tooShort"
+                                      ? `Could not verify ${result.note}: the note was too short to measure reliably.`
+                                      : `Could not verify ${result.note}: no stable pitch was detected.`
+                                  )).join("\n")
+                                : allCorrect
+                                  ? `Correct pitch class. ${feedback
+                                    .map((result) => `${result.detectedSwara || note}${
+                                      result.detectedRegister > 0
+                                        ? `, higher octave +${result.detectedRegister}`
+                                        : result.detectedRegister < 0
+                                          ? `, lower octave ${result.detectedRegister}`
+                                          : ""
+                                    } played`)
+                                    .join("; ")}.`
+                                  : "";
+                              return (
+                                <span className="swar-comment-group" key={`${note}-${noteIndex}`}>
+                                  <span
+                                    className={[
+                                      "swar",
+                                      ...getCarnaticNoteClasses(note),
+                                      canSelectFromTable ? "swar-range-selectable" : "",
+                                      isSelectedRangeBoundary ? "swar-range-boundary" : "",
+                                      hasPlaybackPosition &&
+                                      currentRowIndex === rowIndex &&
+                                      currentBeatIndex === beatIndex &&
+                                      currentNoteIndexInCell === noteIndex
+                                        ? "swar-active"
+                                        : "",
+                                    ].join(" ")}
+                                    role={canSelectFromTable ? "button" : undefined}
+                                    tabIndex={canSelectFromTable ? 0 : undefined}
+                                    aria-label={canSelectFromTable
+                                      ? `Select ${note} as the ${noteSelectionTarget === "from" ? "start" : "end"} note`
+                                      : undefined}
+                                    onClick={canSelectFromTable
+                                      ? () => onSelectPerformanceNote(feedback)
+                                      : undefined}
+                                    onKeyDown={canSelectFromTable
+                                      ? (event) => {
+                                        if (event.key === "Enter" || event.key === " ") {
+                                          event.preventDefault();
+                                          onSelectPerformanceNote(feedback);
+                                        }
+                                      }
+                                      : undefined}
+                                  >
+                                    {formatCarnaticNote(note)}
+                                    {(incorrect.length > 0 || unverifiable.length > 0 || allCorrect) && (
+                                      <span
+                                        className={`performance-note-indicator ${
+                                          incorrect.length
+                                            ? "performance-note-indicator--incorrect"
+                                            : allCorrect
+                                              ? "performance-note-indicator--correct"
+                                              : "performance-note-indicator--unverified"
+                                        }`}
+                                        title={indicatorTitle}
+                                        aria-label={indicatorTitle}
+                                        tabIndex={0}
+                                      >
+                                        {incorrect.length || unverifiable.length ? "✕" : "✓"}
+                                      </span>
+                                    )}
+                                  </span>
+                                  {noteComments.map((comment) => (
+                                    <button
+                                      type="button"
+                                      className={`recording-comment-marker ${
+                                        selectedRecordingCommentId === comment.id
+                                          ? "recording-comment-marker--active"
+                                          : ""
+                                      }`}
+                                      key={comment.id}
+                                      aria-pressed={selectedRecordingCommentId === comment.id}
+                                      aria-label={`Show comment for note ${formatCarnaticNote(note)}`}
+                                      title="Show teacher comment for this note"
+                                      onClick={() => onSelectRecordingComment(comment.id)}
+                                    >
+                                      {COMMENT_MARKER}
+                                    </button>
+                                  ))}
+                                </span>
+                              );
+                            })()
                           ))}
+                          {groupIndex === 0 && beatIndex === 0 && rowComments
+                            .filter((comment) => comment.rowIndex === rowIndex)
+                            .map((comment) => (
+                              <span className="recording-row-comment" key={comment.id}>
+                                <button
+                                  type="button"
+                                  className={`recording-comment-marker ${
+                                    selectedRecordingCommentId === comment.id
+                                      ? "recording-comment-marker--active"
+                                      : ""
+                                  }`}
+                                  aria-pressed={selectedRecordingCommentId === comment.id}
+                                  aria-label={`Show comment for row ${rowIndex + 1}`}
+                                  title={`Show teacher comment for row ${rowIndex + 1}`}
+                                  onClick={() => onSelectRecordingComment(comment.id)}
+                                >
+                                  {COMMENT_MARKER}
+                                </button>
+                              </span>
+                            ))}
                         </span>
                       ))}
                     </td>

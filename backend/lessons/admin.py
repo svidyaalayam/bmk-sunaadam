@@ -3,6 +3,9 @@ import json
 from django.contrib import admin, messages
 from django.http import HttpResponse, JsonResponse
 from django import forms
+from django.contrib.auth import get_user_model
+from django.contrib.auth.admin import UserAdmin
+from django.contrib.auth.models import User
 from django.forms.utils import flatatt
 from django.shortcuts import redirect, render
 from django.urls import path, reverse
@@ -12,12 +15,91 @@ from .models import (
     Exercise,
     ExercisePlaybackPart,
     ExerciseSection,
+    ClassHomework,
+    HomeworkCompletion,
     Lesson,
     Melakarta,
+    MusicClass,
     Ragam,
     Session,
     Talam,
+    TeacherRecordingComment,
+    UserProfile,
 )
+
+
+class UserProfileInline(admin.StackedInline):
+    model = UserProfile
+    can_delete = False
+    extra = 1
+    max_num = 1
+    fields = (
+        "email",
+        "role",
+        "parent_name",
+        "music_teacher_name",
+        "contact_number",
+        "address",
+        "learning_mode",
+        "instrument_name",
+        "default_shruthi",
+    )
+
+
+class SunaadamUserAdmin(UserAdmin):
+    inlines = [UserProfileInline]
+    list_display = (
+        "username",
+        "email",
+        "first_name",
+        "last_name",
+        "profile_role",
+        "is_staff",
+    )
+    list_filter = ("profile__role", "is_staff", "is_superuser", "is_active")
+    search_fields = ("username", "email", "first_name", "last_name", "profile__email")
+
+    @admin.display(description="Role")
+    def profile_role(self, obj):
+        return getattr(getattr(obj, "profile", None), "role", "")
+
+
+admin.site.unregister(User)
+admin.site.register(get_user_model(), SunaadamUserAdmin)
+
+
+@admin.register(MusicClass)
+class MusicClassAdmin(admin.ModelAdmin):
+    list_display = ("name", "teacher", "created_at")
+    list_filter = ("teacher",)
+    search_fields = ("name", "teacher__email", "students__email")
+    filter_horizontal = ("students",)
+    autocomplete_fields = ("teacher", "created_by")
+
+
+@admin.register(ClassHomework)
+class ClassHomeworkAdmin(admin.ModelAdmin):
+    list_display = ("title", "music_class", "due_date", "created_by", "created_at")
+    list_filter = ("music_class", "due_date")
+    search_fields = ("title", "description", "music_class__name")
+    autocomplete_fields = ("music_class", "created_by")
+
+
+@admin.register(HomeworkCompletion)
+class HomeworkCompletionAdmin(admin.ModelAdmin):
+    list_display = ("homework", "student", "completed_at", "updated_at")
+    list_filter = ("completed_at",)
+    search_fields = ("homework__title", "student__email", "note")
+    autocomplete_fields = ("homework", "student")
+
+
+@admin.register(TeacherRecordingComment)
+class TeacherRecordingCommentAdmin(admin.ModelAdmin):
+    list_display = ("recording", "teacher", "scope", "table_index", "row_index", "note_index", "created_at")
+    list_filter = ("scope", "created_at")
+    search_fields = ("comment", "teacher__email", "recording__user__email")
+    autocomplete_fields = ("teacher",)
+    raw_id_fields = ("recording",)
 
 
 class ExerciseSectionInline(admin.StackedInline):

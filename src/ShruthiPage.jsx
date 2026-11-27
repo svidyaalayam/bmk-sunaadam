@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { createShruthiBox, SHRUTHI_NOTES } from "./shruthiAudio";
+import AccountMenu from "./AccountMenu";
 
 export default function ShruthiPage() {
   const boxRef = useRef(null);
@@ -47,6 +48,7 @@ export default function ShruthiPage() {
       <nav className="top-nav" aria-label="Main navigation">
         <span aria-current="page">Shruthi box</span>
         <a href="/carnatic">Carnatic notes</a>
+        <AccountMenu />
       </nav>
 
       <header className="heading">
