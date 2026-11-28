@@ -43,6 +43,10 @@ export function parseLyrics(lyricsString = "") {
   return lyricsString.trim().split(/\s+/).filter(Boolean);
 }
 
+export function buildSectionRows(notes) {
+  return notes.length ? [notes.map((note) => [note])] : [];
+}
+
 export function formatCarnaticNote(note) {
   if (note === ";*") return ",";
   const match = note.match(/^([SRGMPDN])([123])?([*_]*)([+-])?([*_]*)$/);
@@ -236,6 +240,8 @@ export function buildTableSchedule(
         .map((sectionId) => (sections || []).find((section) => String(section.id) === String(sectionId)))
         .filter(Boolean);
       const hasLyrics = selectedSections.some((section) => section.lyrics?.length);
+      const noTalam = selectedSections.length > 0
+        && selectedSections.every((section) => section.noTalam);
       const repeatCount = Math.max(1, step.repeatCount || 1);
       const partKey = String(step.id ?? `step-${stepIndex}`);
       return Array.from({ length: expandRepeats ? repeatCount : 1 }, (_, repeatIndex) => ({
@@ -248,8 +254,15 @@ export function buildTableSchedule(
             .map((section) => section.description?.trim())
             .filter(Boolean)
             .join("\n\n"),
+          swaraIntervals: selectedSections.length === 1
+            ? selectedSections[0].swaraIntervals
+            : null,
+          noTalam,
         },
         notes: selectedSections.flatMap((section) => section.notes),
+        noteSwaraIntervals: selectedSections.flatMap((section) =>
+          section.notes.map(() => section.swaraIntervals || null),
+        ),
         lyrics: hasLyrics
           ? selectedSections.flatMap((section) =>
             section.lyrics?.length
@@ -259,19 +272,30 @@ export function buildTableSchedule(
           : [],
         sectionKey: `sequence-${step.id || stepIndex}-${expandRepeats ? repeatIndex : "display"}`,
         partKey,
-        notesPerBeat: step.notesPerBeat,
+        notesPerBeat: noTalam ? 1 : step.notesPerBeat,
         repeatCount: expandRepeats ? 1 : repeatCount,
+        noTalam,
       }));
     }).flat().filter((entry) => entry.sectionIndex >= 0 && entry.notes.length)
     : (sections || []).flatMap((section, sectionIndex) =>
-      TABLE_VARIANTS
-        .map((notesPerBeat, tableIndex) => ({
+      section.noTalam
+        ? [{
           sectionIndex,
-          notesPerBeat,
-          tableIndex,
-          partKey: `table-${tableIndex}`,
-        }))
-        .filter(({ tableIndex }) => visibleTables?.[tableIndex] ?? true),
+          section,
+          notes: section.notes,
+          lyrics: section.lyrics,
+          notesPerBeat: 1,
+          partKey: `section-${section.id ?? sectionIndex}-no-talam`,
+          noTalam: true,
+        }]
+        : TABLE_VARIANTS
+          .map((notesPerBeat, tableIndex) => ({
+            sectionIndex,
+            notesPerBeat,
+            tableIndex,
+            partKey: `table-${tableIndex}`,
+          }))
+          .filter(({ tableIndex }) => visibleTables?.[tableIndex] ?? true),
     );
 
   return entries.flatMap((entry) => {
@@ -283,15 +307,16 @@ export function buildTableSchedule(
     const section = entry.section || sections[entry.sectionIndex];
     const notes = entry.notes || section?.notes || [];
     const lyrics = entry.lyrics || section?.lyrics || [];
+    const noTalam = Boolean(entry.noTalam ?? section?.noTalam);
     if (!section || !notes.length) return [];
     const duration = getTableDuration(
       notes,
-      beats,
+      noTalam ? 1 : beats,
       entry.notesPerBeat,
       bpm,
-      cyclesPerRow,
-      repeatToCompleteTalam,
-      completeTalamWithEmptyNotes,
+      noTalam ? 1 : cyclesPerRow,
+      noTalam ? false : repeatToCompleteTalam,
+      noTalam ? false : completeTalamWithEmptyNotes,
     );
     const table = {
       sectionIndex: entry.sectionIndex,
@@ -300,16 +325,18 @@ export function buildTableSchedule(
       isExcluded,
       section,
       notes,
+      noteSwaraIntervals: entry.noteSwaraIntervals,
       lyrics,
       beats,
       cyclesPerRow,
       notesPerBeat: entry.notesPerBeat,
+      noTalam,
       repeatCount: entry.repeatCount || 1,
       tableStartTime: isExcluded ? 0 : tableStartTime,
       duration,
       bpm,
-      repeatToCompleteTalam,
-      completeTalamWithEmptyNotes,
+      repeatToCompleteTalam: noTalam ? false : repeatToCompleteTalam,
+      completeTalamWithEmptyNotes: noTalam ? false : completeTalamWithEmptyNotes,
     };
     if (!isExcluded) {
       tableStartTime += duration * (entry.repeatCount || 1);
@@ -331,4 +358,3 @@ function greatestCommonDivisor(first, second) {
   }
   return a;
 }
-

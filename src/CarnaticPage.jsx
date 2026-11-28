@@ -3,6 +3,7 @@ import html2canvas from "html2canvas";
 import { flushSync } from "react-dom";
 import {
   buildTableSchedule,
+  buildSectionRows,
   buildTalamRows,
   DEFAULT_EXERCISES,
   formatCarnaticNote,
@@ -25,6 +26,7 @@ import {
   chooseNoteSelectionCandidate,
   getNoteRange,
 } from "./frequencyAnalysis";
+import { resolveSessionRagamId } from "./sessionRagam";
 import AccountMenu from "./AccountMenu";
 import { apiFetch, useAuth } from "./auth";
 import { SHRUTHI_OPTIONS } from "./shruthiOptions";
@@ -125,6 +127,7 @@ export default function CarnaticPage() {
   const [selectedSessionId, setSelectedSessionId] = useState("sarali");
   const [selectedExerciseId, setSelectedExerciseId] = useState("fallback-0");
   const [selectedMelakartaId, setSelectedMelakartaId] = useState("fallback-29");
+  const [sessionRagamSelections, setSessionRagamSelections] = useState({});
   const visibleTables = [true, true, true, true];
   const [excludedPartKeys, setExcludedPartKeys] = useState([]);
   const [playInLoop, setPlayInLoop] = useState(false);
@@ -634,6 +637,7 @@ export default function CarnaticPage() {
       return Boolean(ragam.melakartaNumber);
     });
   }, [ragams]);
+  const selectableRagams = currentExercise?.ragamId ? melakartaRagams : ragams;
   const currentSession =
     sessions.find((session) => String(session.id) === String(selectedSessionId)) ||
     sessions.find((session) => String(session.id) === String(currentExercise?.sessionId)) ||
@@ -649,15 +653,19 @@ export default function CarnaticPage() {
     currentExercise?.allowRagamChange ??
     false
   );
-  const displayRagamName = selectedRagam
-    ? `${selectedRagam.melakartaNumber ? `${selectedRagam.melakartaNumber}. ` : ""}${selectedRagam.name}`
+  const exerciseSections = useMemo(
+    () => getExerciseSections(currentExercise, selectedRagam),
+    [currentExercise, selectedRagam],
+  );
+  const hasSectionRagams = exerciseSections.some((section) => section.ragamId);
+  const canChooseRagam = !hasSectionRagams && (allowRagamChange || !currentExercise?.ragamId);
+  const displayRagamName = hasSectionRagams
+    ? "Section-specific"
+    : selectedRagam
+      ? `${selectedRagam.melakartaNumber ? `${selectedRagam.melakartaNumber}. ` : ""}${selectedRagam.name}`
     : currentExercise?.ragamName
     ? `${currentExercise.melakartaNumber ? `${currentExercise.melakartaNumber}. ` : ""}${currentExercise.ragamName}`
     : "—";
-  const exerciseSections = useMemo(
-    () => getExerciseSections(currentExercise),
-    [currentExercise],
-  );
   const notes = exerciseSections.flatMap((section) => section.notes);
   const playbackSequence = currentExercise?.playbackSequence || [];
   const swaraIntervals = selectedRagam?.swaraIntervals || currentExercise?.swaraIntervals || null;
@@ -668,12 +676,20 @@ export default function CarnaticPage() {
     const sessionChanged = previousSessionIdRef.current !== selectedSessionId;
     previousSessionIdRef.current = selectedSessionId;
 
-    if (sessionChanged || !allowRagamChange) {
-      if (currentExercise?.ragamId) {
-        setSelectedMelakartaId(String(currentExercise.ragamId));
-      }
+    if (sessionChanged || !allowRagamChange || !currentExercise?.ragamId) {
+      setSelectedMelakartaId(resolveSessionRagamId(
+        currentExercise,
+        selectedSessionId,
+        sessionRagamSelections,
+      ));
     }
-  }, [selectedSessionId, currentExercise?.id, currentExercise?.ragamId, allowRagamChange]);
+  }, [
+    selectedSessionId,
+    currentExercise?.id,
+    currentExercise?.ragamId,
+    allowRagamChange,
+    sessionRagamSelections,
+  ]);
   const selectedBeats = currentTalam?.beats || currentExercise?.talamBeats || 0;
   const cyclesPerRow = currentTalam?.cyclesPerRow || 1;
   const beatGroups = currentTalam?.beatGroups || Array.from(
@@ -881,6 +897,7 @@ export default function CarnaticPage() {
     if (
       position.beatStart &&
       position.beatGroupStart &&
+      !position.noTalam &&
       bellPositionRef.current !== position.beatKey
     ) {
       bellPositionRef.current = position.beatKey;
@@ -893,11 +910,18 @@ export default function CarnaticPage() {
     if (audioPositionRef.current === positionKey) return;
     audioPositionRef.current = positionKey;
     const volume = 0.18 * (activeNoteVolume / 100);
+    const table = playbackSchedule[position.tableIndex];
+    const noteSwaraIntervals = table?.noteSwaraIntervals;
+    const sourceNoteIndex = table?.repeatToCompleteTalam && noteSwaraIntervals?.length
+      ? position.noteIndex % noteSwaraIntervals.length
+      : position.noteIndex;
     audioRef.current.playNote(
       position.note,
       activePlaybackShruthi,
       volume,
-      activeSwaraIntervals,
+      noteSwaraIntervals?.[sourceNoteIndex]
+        || table?.section?.swaraIntervals
+        || activeSwaraIntervals,
       activePlaybackInstrument,
       position.duration,
       0,
@@ -977,7 +1001,7 @@ export default function CarnaticPage() {
       displaySchedule: captureDisplaySchedule,
       totalDuration: capturePlaybackSchedule.reduce((total, table) => total + table.duration, 0),
       exerciseTitle: currentExercise.title,
-      ragamName: currentExercise.ragamName,
+      ragamName: selectedRagam?.name || currentExercise.ragamName,
       beats: selectedBeats,
       cyclesPerRow,
       beatGroups: [...beatGroups],
@@ -988,7 +1012,7 @@ export default function CarnaticPage() {
         notes: currentExercise.notes,
         lyrics: currentExercise.lyrics,
         talamName: currentTalam?.name || currentExercise.talamName,
-        ragamName: currentExercise.ragamName,
+        ragamName: selectedRagam?.name || currentExercise.ragamName,
         repeatToCompleteTalam,
         completeTalamWithEmptyNotes,
       },
@@ -1731,16 +1755,19 @@ export default function CarnaticPage() {
       for (const table of playbackSchedule) {
         if (table.isExcluded || table.duration <= 0) continue;
         const scheduledNotes = [];
-        const rows = buildTalamRows(
-          table.notes,
-          table.beats,
-          table.notesPerBeat,
-          table.cyclesPerRow,
-          table.repeatToCompleteTalam,
-          table.completeTalamWithEmptyNotes,
-        );
+        const rows = table.noTalam
+          ? buildSectionRows(table.notes)
+          : buildTalamRows(
+            table.notes,
+            table.beats,
+            table.notesPerBeat,
+            table.cyclesPerRow,
+            table.repeatToCompleteTalam,
+            table.completeTalamWithEmptyNotes,
+          );
         const secondsPerUnit = 60 / table.bpm / table.notesPerBeat / 4;
         let elapsedUnits = 0;
+        let sourceNoteIndex = 0;
         for (let rowIndex = 0; rowIndex < rows.length; rowIndex += 1) {
           for (let beatIndex = 0; beatIndex < rows[rowIndex].length; beatIndex += 1) {
             const cell = rows[rowIndex][beatIndex];
@@ -1753,11 +1780,21 @@ export default function CarnaticPage() {
                 if (animationTimestamp < table.tableStartTime + table.duration) {
                   frames.push({ timestamp: animationTimestamp, duration: 0 });
                 }
-                if (isBeatGroupStart(beatIndex, table.beats, beatGroups)) {
+                if (!table.noTalam && isBeatGroupStart(beatIndex, table.beats, beatGroups)) {
                   audioEvents.push({ type: "bell", time: timestamp });
                 }
               }
-              scheduledNotes.push({ note, timestamp, secondsPerUnit });
+              scheduledNotes.push({
+                note,
+                timestamp,
+                secondsPerUnit,
+                swaraIntervals: table.noteSwaraIntervals?.[
+                  table.repeatToCompleteTalam && table.noteSwaraIntervals.length
+                    ? sourceNoteIndex % table.noteSwaraIntervals.length
+                    : sourceNoteIndex
+                ] || table.section?.swaraIntervals || activeSwaraIntervals,
+              });
+              sourceNoteIndex += 1;
               elapsedUnits += noteDurationUnits(note);
             }
           }
@@ -1778,6 +1815,7 @@ export default function CarnaticPage() {
             time: current.timestamp,
             duration,
             volume,
+            swaraIntervals: current.swaraIntervals,
           });
         }
       }
@@ -1921,6 +1959,18 @@ export default function CarnaticPage() {
     );
   }
 
+  function excludeAllTables() {
+    const partKeys = [...new Set(displaySchedule.map((table) => table.partKey).filter(Boolean))];
+    if (!partKeys.length) return;
+    stopPlayback();
+    setExcludedPartKeys(partKeys);
+  }
+
+  function excludeNoTables() {
+    stopPlayback();
+    setExcludedPartKeys([]);
+  }
+
   const isPlaybackAnimating = playbackState === "playing" || exportingVideo;
   const currentPlaybackPosition = isPlaybackAnimating
     ? getPlaybackNotePosition(
@@ -1931,6 +1981,10 @@ export default function CarnaticPage() {
       activePlaybackBpm,
     )
     : null;
+  const displayedTalamName = currentPlaybackPosition?.noTalam
+    ? "No Talam"
+    : activeTalamName || currentExercise?.talamName || "No Talam";
+  const displayedTalamBeats = currentPlaybackPosition?.noTalam ? 0 : activePlaybackBeats;
   const currentBeatNumber =
     currentPlaybackPosition?.beatNumber !== undefined
       ? Number(currentPlaybackPosition.beatNumber)
@@ -2733,6 +2787,8 @@ export default function CarnaticPage() {
                 bpm={activePlaybackBpm}
                 controlsDisabled
                 onToggleExclude={toggleExcludePart}
+                onExcludeAll={excludeAllTables}
+                onExcludeNone={excludeNoTables}
                 performanceReport={performanceReport}
                 noteSelectionTarget={noteSelectionTarget}
                 onSelectPerformanceNote={selectPerformanceNote}
@@ -2796,23 +2852,28 @@ export default function CarnaticPage() {
             </select>
           </label>
 
-          <label className={`curriculum-select${!allowRagamChange ? " curriculum-readonly" : ""}`}>
+          <label className={`curriculum-select${!canChooseRagam ? " curriculum-readonly" : ""}`}>
             <span className="control-label">Ragam</span>
-            {allowRagamChange ? (
+            {canChooseRagam ? (
               <select
                 value={selectedMelakartaId}
                 disabled={microphoneStarting || microphoneRecording}
                 onChange={(event) => {
                   stopPlayback();
                   setSelectedMelakartaId(event.target.value);
+                  setSessionRagamSelections((current) => ({
+                    ...current,
+                    [String(selectedSessionId)]: event.target.value,
+                  }));
                 }}
               >
-                {!melakartaRagams.some((r) => String(r.id) === String(selectedMelakartaId)) && selectedRagam && (
+                <option value="">Select a Ragam</option>
+                {!selectableRagams.some((r) => String(r.id) === String(selectedMelakartaId)) && selectedRagam && (
                   <option value={String(selectedRagam.id)}>
                     {selectedRagam.melakartaNumber ? `${selectedRagam.melakartaNumber}. ` : ""}{selectedRagam.name}
                   </option>
                 )}
-                {melakartaRagams.map((ragam) => (
+                {selectableRagams.map((ragam) => (
                   <option value={String(ragam.id)} key={ragam.id}>
                     {ragam.melakartaNumber ? `${ragam.melakartaNumber}. ` : ""}{ragam.name}
                   </option>
@@ -2831,9 +2892,9 @@ export default function CarnaticPage() {
 
           <div className="talam-badge-container">
             <span className="control-label">Talam</span>
-            <div className="talam-badge" title={`${activeTalamName || currentExercise?.talamName || "Talam"} (${activePlaybackBeats || 0} beats)`}>
-              <span className="talam-name">{activeTalamName || currentExercise?.talamName || "No Talam"}</span>
-              <span className="talam-beats">{activePlaybackBeats || 0} beats</span>
+            <div className="talam-badge" title={`${displayedTalamName} (${displayedTalamBeats || 0} beats)`}>
+              <span className="talam-name">{displayedTalamName}</span>
+              <span className="talam-beats">{displayedTalamBeats || 0} beats</span>
             </div>
           </div>
 
@@ -3237,6 +3298,8 @@ export default function CarnaticPage() {
             bpm={activePlaybackBpm}
             controlsDisabled={microphoneStarting || microphoneRecording}
             onToggleExclude={toggleExcludePart}
+            onExcludeAll={excludeAllTables}
+            onExcludeNone={excludeNoTables}
           />
         ) : (
           <p className="status">No exercises are assigned to this session yet.</p>
@@ -3342,6 +3405,7 @@ function HomeworkCompletionCard({ homework, onSaved }) {
 function getRecordingCommentRows(recordingSettings, tableIndex) {
   const table = recordingSettings?.displaySchedule?.[tableIndex];
   if (!table || table.isExcluded || !Array.isArray(table.notes)) return [];
+  if (table.noTalam) return buildSectionRows(table.notes);
   return buildTalamRows(
     table.notes,
     table.beats || recordingSettings.beats,
@@ -3356,7 +3420,9 @@ function getRecordingCommentRows(recordingSettings, tableIndex) {
 
 function getRecordingCommentTableLabel(table, index) {
   const title = table.section?.title || table.partKey || `Table ${index + 1}`;
-  return `${index + 1}. ${title} · ${table.notesPerBeat} note${table.notesPerBeat === 1 ? "" : "s"}/beat`;
+  return table.noTalam
+    ? `${index + 1}. ${title} · No Talam`
+    : `${index + 1}. ${title} · ${table.notesPerBeat} note${table.notesPerBeat === 1 ? "" : "s"}/beat`;
 }
 
 function getRecordingCommentLocation(comment, recordingSettings) {
@@ -3373,12 +3439,21 @@ function getRecordingCommentLocation(comment, recordingSettings) {
   return note ? `${location} · Note ${formatCarnaticNote(note)}` : location;
 }
 
-function getExerciseSections(exercise) {
+function getExerciseSections(exercise, selectedRagam = null) {
   if (!exercise) return [];
   if (exercise.sections?.length) {
+    const hasSectionRagams = exercise.sections.some((section) => section.ragamId);
     return exercise.sections.map((section) => ({
       ...section,
       description: section.description || "",
+      noTalam: Boolean(section.noTalam),
+      swaraIntervals: exercise.ragamId
+        ? selectedRagam?.swaraIntervals || exercise.swaraIntervals
+        : section.ragamId
+          ? section.swaraIntervals
+          : hasSectionRagams
+            ? exercise.swaraIntervals
+            : selectedRagam?.swaraIntervals || exercise.swaraIntervals,
       notes: parseCarnaticNotes(section.notes),
       lyrics: parseLyrics(section.lyrics),
     }));
@@ -3386,6 +3461,7 @@ function getExerciseSections(exercise) {
   return [{
     title: "Main",
     description: "",
+    noTalam: false,
     notes: parseCarnaticNotes(exercise.notes),
     lyrics: parseLyrics(exercise.lyrics),
   }];
@@ -3403,6 +3479,8 @@ function Exercise({
   bpm,
   controlsDisabled,
   onToggleExclude,
+  onExcludeAll,
+  onExcludeNone,
   performanceReport,
   noteSelectionTarget,
   onSelectPerformanceNote,
@@ -3457,6 +3535,7 @@ function Exercise({
           repeatCount={table.repeatCount || 1}
           repeatToCompleteTalam={table.repeatToCompleteTalam ?? repeatToCompleteTalam}
           completeTalamWithEmptyNotes={table.completeTalamWithEmptyNotes ?? completeTalamWithEmptyNotes}
+          noTalam={table.noTalam}
           isExcluded={table.isExcluded}
           partKey={table.partKey}
           onToggleExclude={onToggleExclude}
@@ -3502,6 +3581,26 @@ function Exercise({
         </div>
       )}
 
+      {tableSchedule.length > 0 && (
+        <div className="exclude-bulk-controls" role="group" aria-label="Bulk table exclusion">
+          <button
+            type="button"
+            className="secondary"
+            onClick={onExcludeAll}
+            disabled={controlsDisabled}
+          >
+            Exclude all
+          </button>
+          <button
+            type="button"
+            className="secondary"
+            onClick={onExcludeNone}
+            disabled={controlsDisabled}
+          >
+            Exclude none
+          </button>
+        </div>
+      )}
       <div className="table-list">{tableElements}</div>
     </section>
   );
@@ -3540,16 +3639,19 @@ function getPlaybackNotePosition(tableSchedule, beatNumbers, beatGroups, playbac
       duration: tableDuration,
       repeatToCompleteTalam = true,
       completeTalamWithEmptyNotes = false,
+      noTalam = false,
       bpm = defaultBpm,
     } = table;
-    const rows = buildTalamRows(
-      notes,
-      beats,
-      notesPerBeat,
-      cyclesPerRow,
-      repeatToCompleteTalam,
-      completeTalamWithEmptyNotes,
-    );
+    const rows = noTalam
+      ? buildSectionRows(notes)
+      : buildTalamRows(
+        notes,
+        beats,
+        notesPerBeat,
+        cyclesPerRow,
+        repeatToCompleteTalam,
+        completeTalamWithEmptyNotes,
+      );
     if (playbackTime >= tableStartTime && playbackTime < tableStartTime + tableDuration) {
       const secondsPerBeat = 60 / bpm;
       const current = getTableNotePosition(
@@ -3559,7 +3661,7 @@ function getPlaybackNotePosition(tableSchedule, beatNumbers, beatGroups, playbac
         notesPerBeat,
       );
       if (!current) return null;
-      const rawBeatNumber =
+      const rawBeatNumber = noTalam ? null :
         Array.isArray(beatNumbers) && beatNumbers.length > 0
           ? beatNumbers[current.beatIndex % beats]
           : (current.beatIndex % beats);
@@ -3572,11 +3674,12 @@ function getPlaybackNotePosition(tableSchedule, beatNumbers, beatGroups, playbac
         note: current.note,
         noteIndex: current.noteIndex,
         beatNumber: Number.isFinite(parsedBeatNumber) ? parsedBeatNumber : null,
-        beatCount: (current.beatIndex % beats) + 1,
+        beatCount: noTalam ? null : (current.beatIndex % beats) + 1,
         duration: (secondsPerBeat / notesPerBeat)
           * current.durationUnits / 4,
-        beatStart: current.noteIndexInCell === 0,
-        beatGroupStart: isBeatGroupStart(current.beatIndex, beats, beatGroups),
+        beatStart: !noTalam && current.noteIndexInCell === 0,
+        beatGroupStart: !noTalam && isBeatGroupStart(current.beatIndex, beats, beatGroups),
+        noTalam,
         isContinuation: current.note.startsWith(";"),
         beatKey: `${tableIndex}-${current.rowIndex}-${current.beatIndex}`,
       };
@@ -3601,6 +3704,7 @@ function getPlaybackBeatProgress(tableSchedule, playbackTime, bpm) {
       && playbackTime < entry.tableStartTime + entry.duration * (entry.repeatCount || 1),
   );
   if (!table) return 0;
+  if (table.noTalam) return 0;
   const beatDuration = 60 / bpm;
   return ((playbackTime - table.tableStartTime) % beatDuration) / beatDuration;
 }
@@ -3679,6 +3783,7 @@ function NoteTable({
   repeatCount,
   repeatToCompleteTalam = true,
   completeTalamWithEmptyNotes = false,
+  noTalam = false,
   isExcluded = false,
   partKey,
   onToggleExclude,
@@ -3692,14 +3797,16 @@ function NoteTable({
   selectedRecordingCommentId,
   onSelectRecordingComment,
 }) {
-  const rows = buildTalamRows(
-    notes,
-    beats,
-    notesPerBeat,
-    cyclesPerRow,
-    repeatToCompleteTalam,
-    completeTalamWithEmptyNotes,
-  );
+  const rows = noTalam
+    ? buildSectionRows(notes)
+    : buildTalamRows(
+      notes,
+      beats,
+      notesPerBeat,
+      cyclesPerRow,
+      repeatToCompleteTalam,
+      completeTalamWithEmptyNotes,
+    );
   let soundingNoteIndex = 0;
   const noteFeedbackByPosition = rows.map((row) => row.map((cell) => cell.map((note) => {
     if (note.startsWith(";")) return null;
@@ -3722,7 +3829,9 @@ function NoteTable({
   const tableLevelComments = tableComments.filter((comment) => comment.scope === "table");
   const rowComments = tableComments.filter((comment) => comment.scope === "row");
   const lyricRows = lyrics.length
-    ? buildTalamRows(
+    ? noTalam
+      ? buildSectionRows(lyrics)
+      : buildTalamRows(
         lyrics,
         beats,
         notesPerBeat,
@@ -3755,7 +3864,9 @@ function NoteTable({
   const currentRepeat = tableIsActive
     ? Math.min(repeatCount, Math.floor((playbackTime - tableStartTime) / tableDuration) + 1)
     : 0;
-  const columnGroups = getColumnGroups(beats, cyclesPerRow, beatGroups);
+  const columnGroups = noTalam
+    ? Array.from({ length: rows[0]?.length || 0 }, (_, index) => [index])
+    : getColumnGroups(beats, cyclesPerRow, beatGroups);
   const columnCount = columnGroups.length;
   const isWideTalam = columnCount >= 12 || beats >= 12;
   const isVeryWideTalam = columnCount >= 15 || beats >= 15;
@@ -3770,10 +3881,10 @@ function NoteTable({
   }, [hasPlaybackPosition, currentRowIndex, currentBeatIndex]);
 
   return (
-    <section className={`note-table-section ${tableIsActive ? "table-playing" : ""} ${isExcluded ? "table-section-excluded" : ""} notes-per-beat-${notesPerBeat} talam-beats-${beats} ${isWideTalam ? "wide-talam" : ""} ${isVeryWideTalam ? "very-wide-talam" : ""}`}>
+    <section className={`note-table-section ${noTalam ? "no-talam-table" : ""} ${tableIsActive ? "table-playing" : ""} ${isExcluded ? "table-section-excluded" : ""} notes-per-beat-${notesPerBeat} talam-beats-${beats} ${isWideTalam ? "wide-talam" : ""} ${isVeryWideTalam ? "very-wide-talam" : ""}`}>
       <div className="table-title">
         <div className="table-title-meta">
-          <h3>{notesPerBeat} note{notesPerBeat > 1 ? "s" : ""} per beat</h3>
+          <h3>{noTalam ? "Notes without Talam" : `${notesPerBeat} note${notesPerBeat > 1 ? "s" : ""} per beat`}</h3>
           <span>{noteTotal} notes · {rows.length} row{rows.length > 1 ? "s" : ""}</span>
           {repeatCount > 1 && (
             <span className="repeat-status">
@@ -3822,7 +3933,7 @@ function NoteTable({
                 {columnGroups.map((group, groupIndex) => (
                   <th
                     className={[
-                      group.some((index) => beatNumbers[index % beats] === 0) ? "beat-zero" : "",
+                      !noTalam && group.some((index) => beatNumbers[index % beats] === 0) ? "beat-zero" : "",
                       hasPlaybackPosition &&
                       currentRowIndex >= 0 &&
                       currentRowIndex < rows.length &&
@@ -3833,7 +3944,9 @@ function NoteTable({
                     key={groupIndex}
                     scope="col"
                   >
-                    <span className="beat-prefix">Beat </span>{group[0] + 1}{group.length > 1 ? `–${group[group.length - 1] + 1}` : ""}
+                    {noTalam
+                      ? `Note ${group[0] + 1}`
+                      : <><span className="beat-prefix">Beat </span>{group[0] + 1}{group.length > 1 ? `–${group[group.length - 1] + 1}` : ""}</>}
                   </th>
                 ))}
               </tr>
@@ -3845,7 +3958,7 @@ function NoteTable({
                   {columnGroups.map((group, groupIndex) => (
                     <td
                       className={[
-                        group.some((index) => beatNumbers[index % beats] === 0) ? "beat-zero" : "",
+                        !noTalam && group.some((index) => beatNumbers[index % beats] === 0) ? "beat-zero" : "",
                         hasPlaybackPosition &&
                         currentRowIndex === rowIndex &&
                         group.includes(currentBeatIndex)
@@ -4013,7 +4126,7 @@ function NoteTable({
                     {columnGroups.map((group, groupIndex) => (
                       <td
                         className={[
-                          group.some((index) => beatNumbers[index % beats] === 0) ? "beat-zero" : "",
+                          !noTalam && group.some((index) => beatNumbers[index % beats] === 0) ? "beat-zero" : "",
                           hasPlaybackPosition &&
                           currentRowIndex === rowIndex &&
                           group.includes(currentBeatIndex)

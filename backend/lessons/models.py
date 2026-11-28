@@ -264,6 +264,17 @@ class ExerciseSection(models.Model):
     exercise = models.ForeignKey(Exercise, related_name="sections", on_delete=models.CASCADE)
     title = models.CharField(max_length=120)
     description = models.TextField(blank=True, default="")
+    ragam = models.ForeignKey(
+        Ragam,
+        related_name="exercise_sections",
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+    )
+    no_talam = models.BooleanField(
+        default=False,
+        help_text="Display each note in its own column and play this section without Talam beats.",
+    )
     notes = models.TextField()
     lyrics = models.TextField(blank=True, default="")
     position = models.PositiveIntegerField(default=0)
@@ -279,6 +290,12 @@ class ExerciseSection(models.Model):
             "id": self.id,
             "title": self.title,
             "description": self.description,
+            "ragamId": self.ragam_id,
+            "ragamName": self.ragam.name if self.ragam_id else "",
+            "noTalam": self.no_talam,
+            "swaraIntervals": (
+                self.ragam.melakarta.swara_intervals if self.ragam_id else None
+            ),
             "notes": self.notes,
             "lyrics": self.lyrics,
             "position": self.position,

@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { resolveSessionRagamId } from "../src/sessionRagam.js";
 
 function isMelakartaRagam(ragam) {
   if (typeof ragam.isMelakarta === "boolean") return ragam.isMelakarta;
@@ -108,4 +109,21 @@ test("formatRagamDisplayName displays numbers for Melakarta and plain names for 
 
   const exerciseFallback = { ragamName: "Hamsadhwani", melakartaNumber: null };
   assert.equal(formatRagamDisplayName(null, exerciseFallback), "Hamsadhwani");
+});
+
+test("Ragamalika sessions retain their independently selected Ragams", () => {
+  const selections = { "session-1": "ragam-1", "session-2": "ragam-2" };
+  assert.equal(resolveSessionRagamId({ ragamId: null }, "session-1", selections), "ragam-1");
+  assert.equal(resolveSessionRagamId({ ragamId: null }, "session-2", selections), "ragam-2");
+});
+
+test("session Ragam selection can be cleared and otherwise falls back to exercise Ragam", () => {
+  assert.equal(
+    resolveSessionRagamId({ ragamId: "ragam-fixed" }, "session-1", {}),
+    "ragam-fixed",
+  );
+  assert.equal(
+    resolveSessionRagamId({ ragamId: "ragam-fixed" }, "session-1", { "session-1": "" }),
+    "",
+  );
 });

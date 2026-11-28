@@ -474,6 +474,34 @@ test("buildTableSchedule with excludedPartKeys for EXERCISE PLAYBACK PARTS", () 
   const totalExcludedDuration = playWithExcluded.reduce((sum, t) => sum + t.duration, 0);
   assert.ok(totalExcludedDuration < totalAllDuration);
   assert.equal(totalExcludedDuration, playAll[0].duration + playAll[2].duration);
-});
 
+  const excludedAllKeys = [...new Set(dispAll.map((table) => table.partKey))];
+  const dispNone = buildTableSchedule(
+    sections,
+    beats,
+    [true, true, true, true],
+    bpm,
+    playbackSequence,
+    cyclesPerRow,
+    false,
+    true,
+    false,
+    excludedAllKeys,
+  );
+  assert.ok(dispNone.every((table) => table.isExcluded));
+
+  const dispReset = buildTableSchedule(
+    sections,
+    beats,
+    [true, true, true, true],
+    bpm,
+    playbackSequence,
+    cyclesPerRow,
+    false,
+    true,
+    false,
+    [],
+  );
+  assert.ok(dispReset.every((table) => !table.isExcluded));
+});
 

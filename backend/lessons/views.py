@@ -176,6 +176,7 @@ def curriculum(request):
                     "ragam__melakarta",
                 ).prefetch_related(
                     "sections",
+                    "sections__ragam__melakarta",
                     "playback_sequence",
                     "playback_parts",
                 )

@@ -1,4 +1,4 @@
-import { buildTalamRows, noteDurationUnits } from "./carnatic.js";
+import { buildSectionRows, buildTalamRows, noteDurationUnits } from "./carnatic.js";
 
 const CHROMATIC_NOTES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
 const DEFAULT_SWARA_INTERVALS = { S: 0, R: 2, G: 4, M: 5, P: 7, D: 9, N: 11 };
@@ -70,17 +70,21 @@ export function buildExpectedNoteTimeline(playbackSchedule) {
       repeatCount = 1,
       repeatToCompleteTalam = true,
       completeTalamWithEmptyNotes = false,
+      noTalam = false,
+      section = null,
     } = table;
     if (!beats || !notesPerBeat || !bpm) continue;
 
-    const rows = buildTalamRows(
-      notes,
-      beats,
-      notesPerBeat,
-      cyclesPerRow || 1,
-      repeatToCompleteTalam,
-      completeTalamWithEmptyNotes,
-    );
+    const rows = noTalam
+      ? buildSectionRows(notes)
+      : buildTalamRows(
+        notes,
+        beats,
+        notesPerBeat,
+        cyclesPerRow || 1,
+        repeatToCompleteTalam,
+        completeTalamWithEmptyNotes,
+      );
     const rowNotes = rows.flat(2);
     const secondsPerUnit = 60 / bpm / notesPerBeat / 4;
     const duration = rowNotes.reduce(
@@ -91,8 +95,12 @@ export function buildExpectedNoteTimeline(playbackSchedule) {
     for (let repeatIndex = 0; repeatIndex < Math.max(1, repeatCount); repeatIndex += 1) {
       let elapsed = 0;
       let tableNoteIndex = 0;
+      let sourceNoteIndex = 0;
       let lastSoundingNote = null;
       for (const note of rowNotes) {
+        const noteSwaraIndex = table.repeatToCompleteTalam && table.noteSwaraIntervals?.length
+          ? sourceNoteIndex % table.noteSwaraIntervals.length
+          : sourceNoteIndex;
         const noteDuration = noteDurationUnits(note) * secondsPerUnit;
         if (note.startsWith(";")) {
           if (lastSoundingNote) lastSoundingNote.endTime += noteDuration;
@@ -105,6 +113,8 @@ export function buildExpectedNoteTimeline(playbackSchedule) {
             tableNoteIndex,
             repeatIndex,
             note,
+            swaraIntervals: table.noteSwaraIntervals?.[noteSwaraIndex]
+              || section?.swaraIntervals,
             startTime: tableStartTime + repeatIndex * duration + elapsed,
             endTime: tableStartTime + repeatIndex * duration + elapsed + noteDuration,
           };
@@ -112,6 +122,7 @@ export function buildExpectedNoteTimeline(playbackSchedule) {
           noteNumber += 1;
           tableNoteIndex += 1;
         }
+        sourceNoteIndex += 1;
         elapsed += noteDuration;
       }
     }
@@ -312,7 +323,7 @@ export function analyzePracticeAudioBuffer(audioBuffer, settings) {
     const expectedFrequency = getExpectedFrequency(
       item.note,
       settings.shruthi,
-      settings.swaraIntervals,
+      item.swaraIntervals || settings.swaraIntervals,
     );
     if (!expectedFrequency) {
       return { ...item, expectedFrequency: null, status: "notRecognized", detectedNote: null, centsOff: null };
@@ -334,7 +345,7 @@ export function analyzePracticeAudioBuffer(audioBuffer, settings) {
     const detectedCarnaticSwara = getCarnaticSwara(
       estimate.frequency,
       settings.shruthi,
-      settings.swaraIntervals,
+      item.swaraIntervals || settings.swaraIntervals,
     );
     return {
       ...item,

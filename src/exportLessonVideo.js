@@ -289,7 +289,7 @@ function scheduleAudio(context, output, events, shruthi, swaraIntervals, instrum
     const [, swara, number, , octaveMark] = match;
     const interval = number
       ? NUMBERED_SWARA_INTERVALS[`${swara}${number}`]
-      : Number((swaraIntervals || DEFAULT_SWARA_INTERVALS)[swara]);
+      : Number((event.swaraIntervals || swaraIntervals || DEFAULT_SWARA_INTERVALS)[swara]);
     if (!Number.isFinite(interval)) continue;
 
     const octaveOffset = octaveMark === "+" ? 12 : octaveMark === "-" ? -12 : 0;

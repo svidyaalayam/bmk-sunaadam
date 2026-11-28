@@ -12,9 +12,12 @@ from django.test import Client, TestCase, override_settings
 from .models import (
     ClassHomework,
     Exercise,
+    ExerciseSection,
     HomeworkCompletion,
+    Melakarta,
     MusicClass,
     PracticeRecording,
+    Ragam,
     Session,
     Talam,
     TeacherRecordingComment,
@@ -296,6 +299,51 @@ class MusicClassAndHomeworkApiTests(TestCase):
 
     def setUp(self):
         self.client = Client()
+
+    def test_curriculum_includes_section_ragam_for_ragamalika_exercises(self):
+        from .admin import _exercise_to_export_dict, _import_exercise_from_dict
+
+        melakarta = Melakarta.objects.create(
+            number=1,
+            name="Kanakangi",
+            swara_intervals={"S": 0, "R": 1, "G": 2, "M": 5, "P": 7, "D": 8, "N": 9},
+        )
+        ragam = Ragam.objects.create(
+            name="Section Ragam",
+            melakarta=melakarta,
+            arohanam="S R1 G1 M1 P D1 N1 S+",
+            avarohanam="S+ N1 D1 P M1 G1 R1 S",
+        )
+        section = ExerciseSection.objects.create(
+            exercise=self.exercise,
+            title="Pallavi",
+            notes="S R G M",
+            ragam=ragam,
+            no_talam=True,
+        )
+
+        curriculum = self.client.get("/api/curriculum/")
+        self.assertEqual(curriculum.status_code, 200)
+        exercise = next(
+            item for item in curriculum.json()["exercises"]
+            if item["id"] == self.exercise.id
+        )
+        self.assertIsNone(exercise["ragamId"])
+        self.assertEqual(exercise["sections"][0]["id"], section.id)
+        self.assertEqual(exercise["sections"][0]["ragamId"], ragam.id)
+        self.assertEqual(exercise["sections"][0]["ragamName"], "Section Ragam")
+        self.assertTrue(exercise["sections"][0]["noTalam"])
+        self.assertEqual(
+            exercise["sections"][0]["swaraIntervals"],
+            melakarta.swara_intervals,
+        )
+        exported = _exercise_to_export_dict(self.exercise)
+        self.assertEqual(exported["sections"][0]["ragam_name"], ragam.name)
+        self.assertTrue(exported["sections"][0]["no_talam"])
+        imported = _import_exercise_from_dict(exported)
+        imported_section = imported.sections.get(title="Pallavi")
+        self.assertEqual(imported_section.ragam, ragam)
+        self.assertTrue(imported_section.no_talam)
 
     def test_admin_creates_class_and_class_membership_is_scoped(self):
         self.client.force_login(self.admin)

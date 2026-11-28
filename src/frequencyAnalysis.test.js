@@ -61,6 +61,62 @@ test("buildExpectedNoteTimeline merges held-note markers into the preceding note
   assert.equal(timeline[1].tableNoteIndex, 1);
 });
 
+test("no-Talam sections retain one note per column and BPM-based note timing", () => {
+  const timeline = buildExpectedNoteTimeline([{
+    ...settings.playbackSchedule[0],
+    noTalam: true,
+    notes: ["S", "R", "G", "M", "P", "D"],
+    beats: 8,
+    notesPerBeat: 1,
+  }]);
+
+  assert.equal(timeline.length, 6);
+  assert.equal(timeline[0].startTime, 0);
+  assert.equal(timeline[5].startTime, 5);
+  assert.equal(timeline[5].endTime, 6);
+});
+
+test("performance analysis uses the Ragam assigned to each exercise section", () => {
+  const sectionIntervals = { S: 0, R: 1, G: 3, M: 5, P: 7, D: 8, N: 10 };
+  const buffer = createToneBuffer([
+    { start: 0, end: 0.25, frequency: 261.63 * 2 ** (1 / 12) },
+  ], 0.25);
+  const report = analyzePracticeAudioBuffer(buffer, {
+    ...settings,
+    playbackSchedule: [{
+      ...settings.playbackSchedule[0],
+      notes: ["R"],
+      section: { swaraIntervals: sectionIntervals },
+    }],
+  });
+
+  assert.equal(report.notes[0].status, "correct");
+  assert.deepEqual(report.notes[0].swaraIntervals, sectionIntervals);
+});
+
+test("performance analysis respects different Ragams inside a combined playback step", () => {
+  const firstSectionIntervals = { S: 0, R: 1, G: 4, M: 5, P: 7, D: 8, N: 11 };
+  const secondSectionIntervals = { S: 0, R: 2, G: 4, M: 5, P: 7, D: 9, N: 11 };
+  const buffer = createToneBuffer([
+    { start: 0, end: 0.25, frequency: 261.63 * 2 ** (1 / 12) },
+    { start: 0.25, end: 0.5, frequency: 261.63 * 2 ** (2 / 12) },
+  ], 0.5);
+  const report = analyzePracticeAudioBuffer(buffer, {
+    ...settings,
+    playbackSchedule: [{
+      ...settings.playbackSchedule[0],
+      notes: ["R", "R"],
+      noteSwaraIntervals: [firstSectionIntervals, secondSectionIntervals],
+    }],
+  });
+
+  assert.deepEqual(report.notes.map((note) => note.status), ["correct", "correct"]);
+  assert.deepEqual(report.notes.map((note) => note.swaraIntervals), [
+    firstSectionIntervals,
+    secondSectionIntervals,
+  ]);
+});
+
 test("getNoteRange uses the selected note's start and end times", () => {
   const timeline = buildExpectedNoteTimeline(settings.playbackSchedule);
 

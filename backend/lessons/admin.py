@@ -106,7 +106,15 @@ class ExerciseSectionInline(admin.StackedInline):
     model = ExerciseSection
     extra = 1
     ordering = ("position",)
-    fields = ("title", "description", "notes", "lyrics", "position")
+    autocomplete_fields = ("ragam",)
+    fields = ("title", "description", "ragam", "no_talam", "notes", "lyrics", "position")
+
+    def formfield_for_foreignkey(self, db_field, request, **kwargs):
+        if db_field.name == "ragam":
+            kwargs["help_text"] = (
+                "Used when the Exercise Ragam Name is None; choose the Ragam for this section."
+            )
+        return super().formfield_for_foreignkey(db_field, request, **kwargs)
 
 
 class SectionSequenceWidget(forms.TextInput):
@@ -279,6 +287,8 @@ def _exercise_to_export_dict(exercise):
             {
                 "title": s.title,
                 "description": s.description,
+                "ragam_name": s.ragam.name if s.ragam_id else None,
+                "no_talam": s.no_talam,
                 "notes": s.notes,
                 "lyrics": s.lyrics,
                 "position": s.position,
@@ -339,10 +349,19 @@ def _import_exercise_from_dict(data):
     # Create sections and build title→id map for playback parts
     section_title_to_id = {}
     for sec_data in data.get("sections", []):
+        section_ragam_name = sec_data.get("ragam_name")
+        section_ragam = None
+        if section_ragam_name:
+            try:
+                section_ragam = Ragam.objects.get(name=section_ragam_name)
+            except Ragam.DoesNotExist:
+                raise ValueError(f"Ragam '{section_ragam_name}' not found. Create it first.")
         sec = ExerciseSection.objects.create(
             exercise=exercise,
             title=sec_data.get("title", ""),
             description=sec_data.get("description", ""),
+            ragam=section_ragam,
+            no_talam=sec_data.get("no_talam", False),
             notes=sec_data.get("notes", ""),
             lyrics=sec_data.get("lyrics", ""),
             position=sec_data.get("position", 0),
@@ -384,10 +403,19 @@ class ExerciseAdmin(admin.ModelAdmin):
     list_display = ("title", "session", "talam", "ragam", "repeat_to_complete_talam", "complete_talam_with_empty_notes", "note_duration_fixed", "position")
     list_filter = ("session", "talam", "ragam", "repeat_to_complete_talam", "complete_talam_with_empty_notes", "note_duration_fixed")
     search_fields = ("title", "description", "notes", "session__name")
-    autocomplete_fields = ("session", "talam", "ragam")
+    autocomplete_fields = ("session", "talam")
     exclude = ("melakarta",)
     inlines = (ExerciseSectionInline, ExercisePlaybackPartInline)
     ordering = ("session", "position", "title")
+
+    def formfield_for_foreignkey(self, db_field, request, **kwargs):
+        if db_field.name == "ragam":
+            kwargs["empty_label"] = "None"
+            kwargs["label"] = "Ragam Name"
+            kwargs["help_text"] = (
+                "Choose None for a Ragamalika; users can select a different Ragam for each session."
+            )
+        return super().formfield_for_foreignkey(db_field, request, **kwargs)
 
     # ------------------------------------------------------------------ #
     # Custom URLs                                                          #

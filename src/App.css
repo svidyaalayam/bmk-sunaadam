@@ -1579,6 +1579,13 @@ button:disabled {
   gap: 24px;
 }
 
+.exclude-bulk-controls {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin: 0 0 12px;
+}
+
 .exercise-section-title {
   margin: 8px 0 -14px;
   padding-bottom: 8px;
